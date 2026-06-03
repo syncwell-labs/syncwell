@@ -8,6 +8,10 @@
 # Go
 /vendor/
 
+# Local persistence data dirs
+/data/
+*.log
+
 # Editor / OS
 .DS_Store
 .idea/

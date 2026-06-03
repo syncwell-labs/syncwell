@@ -8,7 +8,11 @@ import (
 	"sync/atomic"
 
 	"syncwell/internal/crdt"
+	"syncwell/internal/store"
 )
+
+// compactEvery is how many persisted writes trigger a snapshot compaction.
+const compactEvery = 256
 
 // Wire message type tags (server -> client).
 const (
@@ -58,23 +62,66 @@ type command struct {
 
 // Room is one collaborative document: a CRDT plus the set of connected clients.
 type Room struct {
-	id      string
-	doc     *crdt.LWWMap
-	clock   *crdt.Clock
-	clients map[*Client]bool
-	cmds    chan command
+	id              string
+	doc             *crdt.LWWMap
+	clock           *crdt.Clock
+	clients         map[*Client]bool
+	cmds            chan command
+	store           store.Store
+	opsSinceCompact int
 }
 
-func newRoom(id string) *Room {
+func newRoom(id string, st store.Store) *Room {
 	r := &Room{
 		id:      id,
 		doc:     crdt.NewLWWMap(),
 		clock:   crdt.NewClock("server:" + id),
 		clients: map[*Client]bool{},
 		cmds:    make(chan command, 64),
+		store:   st,
+	}
+	// Restore persisted state so a restart loses nothing.
+	if st != nil {
+		if snap, err := st.Load(id); err != nil {
+			log.Printf("room %s: load: %v", id, err)
+		} else {
+			r.doc.Load(snap)
+			for _, reg := range snap {
+				r.clock.Observe(reg.TS) // never re-issue a timestamp we've already used
+			}
+		}
 	}
 	go r.loop()
 	return r
+}
+
+// applyAndPersist merges an incoming register, durably records it if it won,
+// and returns the current (winning) register for broadcast.
+func (r *Room) applyAndPersist(key string, reg crdt.Register) crdt.Register {
+	r.clock.Observe(reg.TS)
+	r.doc.ApplyRegister(key, reg)
+	cur, _ := r.doc.Entry(key)
+	if cur.TS == reg.TS { // the incoming write won — persist it
+		r.persist(key, cur)
+	}
+	return cur
+}
+
+func (r *Room) persist(key string, reg crdt.Register) {
+	if r.store == nil {
+		return
+	}
+	if err := r.store.Append(r.id, store.Record{Key: key, Reg: reg}); err != nil {
+		log.Printf("room %s: persist: %v", r.id, err)
+		return
+	}
+	if r.opsSinceCompact++; r.opsSinceCompact >= compactEvery {
+		if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
+			log.Printf("room %s: compact: %v", r.id, err)
+		} else {
+			r.opsSinceCompact = 0
+		}
+	}
 }
 
 // loop is the room's single owner goroutine. It is the *only* place that reads
@@ -101,10 +148,8 @@ func (r *Room) loop() {
 			// the winning register to everyone — including the sender, which is
 			// harmless because applying it is idempotent.
 			if c.in.Register != nil {
-				r.clock.Observe(c.in.Register.TS)
-				r.doc.ApplyRegister(c.in.Key, *c.in.Register)
-				reg, _ := r.doc.Entry(c.in.Key)
-				r.broadcast(Outbound{Type: msgOp, Key: c.in.Key, Register: &reg}, nil)
+				winner := r.applyAndPersist(c.in.Key, *c.in.Register)
+				r.broadcast(Outbound{Type: msgOp, Key: c.in.Key, Register: &winner}, nil)
 			}
 
 		case "merge":
@@ -113,12 +158,7 @@ func (r *Room) loop() {
 			// the winners to the other clients, then send the merging client a
 			// fresh snapshot so it converges with everything it missed.
 			for k, reg := range c.in.State {
-				r.clock.Observe(reg.TS)
-				r.doc.ApplyRegister(k, reg)
-			}
-			for k := range c.in.State {
-				reg, _ := r.doc.Entry(k)
-				winner := reg
+				winner := r.applyAndPersist(k, reg)
 				r.broadcast(Outbound{Type: msgOp, Key: k, Register: &winner}, c.client)
 			}
 			r.sendTo(c.client, Outbound{Type: msgSnapshot, State: r.doc.Snapshot()})
@@ -168,17 +208,20 @@ func (r *Room) deliver(cl *Client, b []byte) {
 type Hub struct {
 	mu    sync.Mutex
 	rooms map[string]*Room
+	store store.Store // nil = in-memory only
 }
 
-// NewHub returns an empty hub.
-func NewHub() *Hub { return &Hub{rooms: map[string]*Room{}} }
+// NewHub returns a hub backed by st (pass nil for in-memory operation).
+func NewHub(st store.Store) *Hub {
+	return &Hub{rooms: map[string]*Room{}, store: st}
+}
 
 func (h *Hub) room(id string) *Room {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	r, ok := h.rooms[id]
 	if !ok {
-		r = newRoom(id)
+		r = newRoom(id, h.store)
 		h.rooms[id] = r
 	}
 	return r

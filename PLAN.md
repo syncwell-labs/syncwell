@@ -73,19 +73,20 @@ reconnect. The same `LWWMap`/`Clock`/`Merge` runs on both sides.
 **DoD:** ✅ `make e2e` cuts a client's socket, edits on both sides, reconnects,
 and asserts byte-for-byte convergence with no lost edits.
 
-### 2.2 Persistence  `[ ]`
+### 2.2 Persistence  `[x]` DONE
 Survive a restart.
 
-- [ ] `internal/store` interface: `Load(room) (snapshot, error)`,
-      `Append(room, op)`, `Snapshot(room, state)`.
-- [ ] Implementation: embedded, dependency-light (start with an append-only op-log
-      file per room + periodic compaction to a snapshot). No external DB required
-      to keep the single-binary story.
-- [ ] Room loads state on first access; writes are appended; periodic snapshot.
-- [ ] Wire it into the hub; server flag `-data <dir>` (empty = in-memory).
+- [x] `internal/store` interface: `Load`, `Append`, `Compact`, `Close`.
+- [x] `FileStore`: append-only op-log per room + atomic snapshot compaction;
+      tolerates torn final line from a crash. No external DB (single-binary).
+- [x] Room loads state on first access; winning writes appended; compaction
+      every 256 writes.
+- [x] Wired into the hub; server flag `-data <dir>` (empty = in-memory);
+      graceful shutdown flushes the store.
 
-**DoD:** start server, make edits, kill -9, restart → document intact. Test
-covers load-after-restart.
+**DoD:** ✅ `make persist` writes through a client, SIGKILLs the server, restarts
+against the same data dir, and a fresh client receives the persisted document.
+Unit tests cover load-after-restart, compaction, and torn-line tolerance.
 
 ### 2.3 Tombstone garbage collection  `[ ]`
 Bound memory (DESIGN.md §4).

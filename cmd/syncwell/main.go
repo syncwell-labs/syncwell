@@ -4,21 +4,37 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"syncwell/internal/server"
+	"syncwell/internal/store"
 )
 
 func main() {
 	addr := flag.String("addr", envOr("SYNCWELL_ADDR", ":8080"), "listen address")
 	static := flag.String("static", "demo", "directory of static files to serve at / (skipped if missing)")
 	sdk := flag.String("sdk", "sdk", "directory of the client SDK to serve at /sdk/ (skipped if missing)")
+	data := flag.String("data", envOr("SYNCWELL_DATA", ""), "data directory for persistence (empty = in-memory)")
 	flag.Parse()
 
-	hub := server.NewHub()
+	var st store.Store
+	if *data != "" {
+		fs, err := store.Open(*data)
+		if err != nil {
+			log.Fatalf("open data dir %q: %v", *data, err)
+		}
+		st = fs
+		log.Printf("persistence enabled at %s/", *data)
+	}
+
+	hub := server.NewHub(st)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", hub.ServeWS)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -34,8 +50,24 @@ func main() {
 		log.Printf("serving demo from %s/", *static)
 	}
 
+	srv := &http.Server{Addr: *addr, Handler: mux}
+
+	// Graceful shutdown: drain connections and flush persistence on SIGINT/TERM.
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		log.Print("shutting down…")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		if st != nil {
+			_ = st.Close()
+		}
+	}()
+
 	log.Printf("syncwell listening on %s  (websocket: /ws?room=ID)", *addr)
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
