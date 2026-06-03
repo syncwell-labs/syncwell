@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell — collaborative kanban</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; }
+      header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+      h1 { font-size: 20px; margin: 0; }
+      #status { font-size: 13px; padding: 2px 10px; border-radius: 999px; background: #eee; color: #555; }
+      #status.live { background: #d8f5dd; color: #137333; }
+      #peers { display: flex; gap: 6px; margin-left: auto; }
+      .avatar { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #ccc; }
+      .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; max-width: 1000px; }
+      .col { background: #f4f5f7; border-radius: 10px; padding: 10px; min-height: 220px; display: flex; flex-direction: column; }
+      @media (prefers-color-scheme: dark) { .col { background: #1e1e1e; } .card { background: #2a2a2a; } }
+      .col h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #888; margin: 4px 6px 10px; }
+      .col.drag-over { outline: 2px dashed #4c9aff; outline-offset: -4px; }
+      .card { background: #fff; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,.12); cursor: grab; }
+      .card:active { cursor: grabbing; }
+      .card .del { float: right; color: #bbb; cursor: pointer; border: 0; background: none; font-size: 15px; }
+      .add { display: flex; gap: 6px; margin-top: auto; }
+      .add input { flex: 1; padding: 7px 9px; border: 1px solid #ccc; border-radius: 6px; background: transparent; color: inherit; }
+      .add button { padding: 7px 12px; border: 0; border-radius: 6px; background: #4c9aff; color: #fff; cursor: pointer; }
+      .hint { color: #888; font-size: 13px; margin-top: 16px; max-width: 1000px; }
+      a { color: #4c9aff; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Syncwell Kanban</h1>
+      <span id="status">connecting…</span>
+      <div id="peers" title="connected peers"></div>
+    </header>
+    <div class="board" id="board"></div>
+    <p class="hint">
+      Drag cards between columns — every move syncs live to all open windows.
+      Open this page in two windows, or kill the server and keep editing: your
+      changes apply offline and reconcile on reconnect.
+      <a href="/">← simple demo</a>
+    </p>
+
+    <script type="module">
+      import { Syncwell } from "/sdk/syncwell.js";
+
+      const COLUMNS = [
+        { id: "todo", label: "To Do" },
+        { id: "doing", label: "Doing" },
+        { id: "done", label: "Done" },
+      ];
+      const PREFIX = "card:";
+
+      const statusEl = document.getElementById("status");
+      const peersEl = document.getElementById("peers");
+      const boardEl = document.getElementById("board");
+
+      const myHue = Math.floor(Math.random() * 360);
+      const peers = new Map();
+
+      const sw = new Syncwell(`ws://${location.host}/ws`, "kanban");
+
+      // --- ordering helper: monotonic-ish key so new cards land at the bottom ---
+      let lastOrd = 0;
+      function nextOrd() {
+        const t = Date.now();
+        lastOrd = t > lastOrd ? t : lastOrd + 1;
+        return lastOrd;
+      }
+
+      // --- rendering ---------------------------------------------------------
+      function cards() {
+        const live = sw.live();
+        return Object.keys(live)
+          .filter((k) => k.startsWith(PREFIX))
+          .map((k) => ({ id: k.slice(PREFIX.length), ...live[k] }))
+          .sort((a, b) => (a.ord || 0) - (b.ord || 0));
+      }
+
+      function render() {
+        const all = cards();
+        boardEl.innerHTML = "";
+        for (const col of COLUMNS) {
+          const colEl = document.createElement("div");
+          colEl.className = "col";
+          colEl.dataset.col = col.id;
+          colEl.innerHTML = `<h2>${col.label}</h2>`;
+
+          for (const c of all.filter((x) => x.col === col.id)) {
+            const card = document.createElement("div");
+            card.className = "card";
+            card.draggable = true;
+            card.dataset.id = c.id;
+            card.innerHTML = `<button class="del" title="delete">×</button><span></span>`;
+            card.querySelector("span").textContent = c.text;
+            card.querySelector(".del").onclick = () => sw.delete(PREFIX + c.id);
+            card.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", c.id));
+            colEl.appendChild(card);
+          }
+
+          const add = document.createElement("div");
+          add.className = "add";
+          add.innerHTML = `<input placeholder="Add a card…" /><button>Add</button>`;
+          const input = add.querySelector("input");
+          const commit = () => {
+            const text = input.value.trim();
+            if (!text) return;
+            sw.set(PREFIX + crypto.randomUUID().slice(0, 8), { text, col: col.id, ord: nextOrd() });
+            input.value = "";
+          };
+          add.querySelector("button").onclick = commit;
+          input.addEventListener("keydown", (e) => e.key === "Enter" && commit());
+          colEl.appendChild(add);
+
+          colEl.addEventListener("dragover", (e) => { e.preventDefault(); colEl.classList.add("drag-over"); });
+          colEl.addEventListener("dragleave", () => colEl.classList.remove("drag-over"));
+          colEl.addEventListener("drop", (e) => {
+            e.preventDefault();
+            colEl.classList.remove("drag-over");
+            const id = e.dataTransfer.getData("text/plain");
+            const cur = sw.get(PREFIX + id);
+            if (cur && cur.col !== col.id) {
+              sw.set(PREFIX + id, { ...cur, col: col.id, ord: nextOrd() });
+            }
+          });
+
+          boardEl.appendChild(colEl);
+        }
+      }
+
+      function renderPeers() {
+        peersEl.innerHTML = "";
+        for (const hue of peers.values()) {
+          const a = document.createElement("div");
+          a.className = "avatar";
+          a.style.background = `hsl(${hue} 70% 55%)`;
+          peersEl.appendChild(a);
+        }
+      }
+
+      // --- wiring ------------------------------------------------------------
+      sw.on("open", () => {
+        statusEl.textContent = "live";
+        statusEl.className = "live";
+        sw.presence({ hue: myHue });
+      });
+      sw.on("close", () => {
+        statusEl.textContent = "offline — editing locally…";
+        statusEl.className = "";
+      });
+      sw.on("change", render);
+      sw.on("presence", ({ clientId, data }) => {
+        if (data?.hue != null) {
+          peers.set(clientId, data.hue);
+          renderPeers();
+          sw.presence({ hue: myHue }); // echo so newcomers see us
+        }
+      });
+      sw.on("leave", ({ clientId }) => { peers.delete(clientId); renderPeers(); });
+
+      render();
+      sw.connect();
+    </script>
+  </body>
+</html>

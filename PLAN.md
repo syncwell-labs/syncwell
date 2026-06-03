@@ -117,11 +117,11 @@ shows real figures.
 
 ## Phase 3 — Make it real (distribution + polish)
 
-### 3.1 Auth & hardening  `[ ]`
-- [ ] Room access tokens (signed); `CheckOrigin` all-list via config.
-- [ ] Per-connection rate limiting / message-size already capped — add per-room
-      client cap and basic abuse guards.
-- [ ] Graceful shutdown (drain rooms, flush persistence).
+### 3.1 Auth & hardening  `[x]` DONE
+- [x] Room access tokens (HMAC, expiring, room-scoped); `-secret` enables auth,
+      `-mint` issues tokens. Origin allow-list via `-origins`.
+- [x] Message-size cap (1 MiB) + per-room client cap (`-max-clients`).
+- [x] Graceful shutdown (drain connections, flush persistence) — Phase 2.2.
 
 ### 3.2 Packaging & deploy  `[ ]`
 - [ ] Publish the client SDK as an npm package (`syncwell-client`).
@@ -130,10 +130,10 @@ shows real figures.
       single static binary makes this trivial.)
 - [ ] GitHub Actions: vet + `go test -race` + chaos + bench on push; badges.
 
-### 3.3 Flagship demo  `[ ]`
-- [ ] Collaborative **kanban board** demo (drag cards, live cursors, presence
-      avatars) built on the SDK — visually obvious multiplayer.
-- [ ] Keep the simple text demo as the "hello world".
+### 3.3 Flagship demo  `[x]` DONE
+- [x] Collaborative **kanban board** (`demo/kanban.html`): drag cards between
+      columns, add/delete, presence avatars — all synced live on the SDK.
+- [x] Simple text demo kept as the "hello world", cross-linked.
 
 ### 3.4 Docs & launch prep  `[ ]`
 - [ ] README: final positioning, real numbers, GIF, quickstart, deploy.

@@ -21,6 +21,7 @@ const (
 	msgOp       = "op"       // a single committed register change, broadcast to all
 	msgPresence = "presence" // ephemeral, non-persisted relay (cursors, who's-online)
 	msgLeave    = "leave"    // a client disconnected
+	msgError    = "error"    // server rejected the connection (e.g. room full)
 )
 
 // Inbound is a message from a client. As of Phase 2 the client authors the
@@ -81,10 +82,11 @@ type Room struct {
 	cmds            chan command
 	store           store.Store
 	compactEvery    int
+	maxClients      int
 	opsSinceCompact int
 }
 
-func newRoom(id string, st store.Store, compactEvery int) *Room {
+func newRoom(id string, st store.Store, compactEvery, maxClients int) *Room {
 	r := &Room{
 		id:           id,
 		doc:          crdt.NewLWWMap(),
@@ -94,6 +96,7 @@ func newRoom(id string, st store.Store, compactEvery int) *Room {
 		cmds:         make(chan command, 64),
 		store:        st,
 		compactEvery: compactEvery,
+		maxClients:   maxClients,
 	}
 	// Restore persisted state so a restart loses nothing.
 	if st != nil {
@@ -179,6 +182,12 @@ func (r *Room) loop() {
 	for c := range r.cmds {
 		switch c.kind {
 		case "join":
+			if r.maxClients > 0 && len(r.clients) >= r.maxClients {
+				// Reject over-capacity: tell the client, then close its channel.
+				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"room full"`)})
+				close(c.client.send)
+				continue
+			}
 			r.clients[c.client] = true
 			r.acked[c.client] = 0
 			r.sendTo(c.client, Outbound{Type: msgSnapshot, State: r.doc.Snapshot()})
@@ -269,21 +278,28 @@ func (r *Room) deliver(cl *Client, b []byte) {
 	}
 }
 
-// Hub multiplexes rooms by id, creating them lazily on first join.
-type Hub struct {
-	mu           sync.Mutex
-	rooms        map[string]*Room
-	store        store.Store // nil = in-memory only
-	compactEvery int
+// Config configures a Hub. The zero value is a valid, fully-open dev server.
+type Config struct {
+	Store        store.Store // nil = in-memory only
+	CompactEvery int         // <=0 = default
+	Secret       string      // "" = auth disabled (open)
+	Origins      []string    // empty = allow any Origin
+	MaxClients   int         // 0 = unlimited per room
 }
 
-// NewHub returns a hub backed by st (pass nil for in-memory operation).
-// compactEvery sets the maintenance interval; <=0 uses the default.
-func NewHub(st store.Store, compactEvery int) *Hub {
-	if compactEvery <= 0 {
-		compactEvery = defaultCompactEvery
+// Hub multiplexes rooms by id, creating them lazily on first join.
+type Hub struct {
+	mu    sync.Mutex
+	rooms map[string]*Room
+	cfg   Config
+}
+
+// NewHub returns a hub for the given config.
+func NewHub(cfg Config) *Hub {
+	if cfg.CompactEvery <= 0 {
+		cfg.CompactEvery = defaultCompactEvery
 	}
-	return &Hub{rooms: map[string]*Room{}, store: st, compactEvery: compactEvery}
+	return &Hub{rooms: map[string]*Room{}, cfg: cfg}
 }
 
 func (h *Hub) room(id string) *Room {
@@ -291,10 +307,23 @@ func (h *Hub) room(id string) *Room {
 	defer h.mu.Unlock()
 	r, ok := h.rooms[id]
 	if !ok {
-		r = newRoom(id, h.store, h.compactEvery)
+		r = newRoom(id, h.cfg.Store, h.cfg.CompactEvery, h.cfg.MaxClients)
 		h.rooms[id] = r
 	}
 	return r
+}
+
+// authorize enforces origin allow-listing and room-token checks before upgrade.
+func (h *Hub) originAllowed(origin string) bool {
+	if len(h.cfg.Origins) == 0 || origin == "" {
+		return true
+	}
+	for _, o := range h.cfg.Origins {
+		if o == origin {
+			return true
+		}
+	}
+	return false
 }
 
 // Stats queries every room's owner goroutine and returns a snapshot map. Safe to

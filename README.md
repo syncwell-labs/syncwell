@@ -47,9 +47,24 @@ GitHub stars / Docker pulls / self-hosting users._
 ## Quickstart
 
 ```bash
-# Run the server (serves the demo at / and websockets at /ws)
+# Run the server (serves the demos at / and websockets at /ws)
 go run ./cmd/syncwell
-# open http://localhost:8080 in two browser windows and type
+# open http://localhost:8080            → simple text demo (two windows)
+# open http://localhost:8080/kanban.html → collaborative kanban (drag cards live)
+```
+
+### Production knobs (all optional)
+
+```bash
+syncwell \
+  -data ./data \                 # persist to disk (survives restart)
+  -secret "$SECRET" \            # require room tokens (HMAC, expiring)
+  -origins https://app.example \ # Origin allow-list
+  -max-clients 200               # per-room cap
+
+# issue a 24h token for a room:
+syncwell -secret "$SECRET" -mint my-room
+# clients connect with ws://host/ws?room=my-room&token=<token>
 ```
 
 Or build the single binary:

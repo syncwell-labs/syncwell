@@ -143,12 +143,26 @@ a concurrent online edit and win the conflict — "last" is last in causal order
 not wall-clock time (§3). For a collaboration tool this is the right trade-off;
 no edit is silently lost, and the outcome is deterministic across all replicas.
 
-## 7. What is intentionally NOT here yet
+## 7. Auth: stateless room tokens (Phase 3 — shipped)
 
-- **Persistence** — state is in-memory; a server restart clears rooms. (Phase 2)
-- **Auth** — `CheckOrigin` allows all origins for local dev. (Phase 3)
+Access control is opt-in and database-free. When a server is started with a
+`-secret`, each room requires a token: `"<exp>.<hmac-sha256(secret, room|exp)>"`
+(`internal/server/auth.go`). The server verifies with the shared secret alone —
+no token store, no per-request DB hit — and the check is constant-time on the
+signature. Tokens are room-scoped and expiring; `syncwell -secret S -mint room`
+issues one. With no secret set, auth is disabled (open dev mode). Two more
+guards layer on top: an **Origin allow-list** (`-origins`) and a **per-room
+client cap** (`-max-clients`). This keeps the common self-host case
+zero-config while making a locked-down deployment one flag away.
+
+## 8. What is intentionally NOT here yet
+
 - **Rich text** — the LWW-Map handles structured docs; collaborative *text* with
-  character-level merging needs a sequence CRDT (RGA/Yjs-style). (Phase 2/stretch)
+  character-level merging needs a sequence CRDT (RGA/Yjs-style). (Stretch)
+- **Horizontal scaling** — one room is owned by one process today; sharding
+  rooms across nodes is the scaling stretch goal (§5, ROADMAP).
+- **fsync-per-write durability** — writes flush to the OS (survive process
+  kill); surviving power loss would add an fsync knob (§4 / store).
 
 These are omissions of scope, not of awareness — each is tracked in the roadmap
 with the reason it's deferred.

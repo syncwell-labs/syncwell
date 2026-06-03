@@ -36,6 +36,16 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 	if roomID == "" {
 		roomID = "default"
 	}
+	// Origin allow-list (when configured).
+	if !h.originAllowed(req.Header.Get("Origin")) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+	// Room token (when a secret is configured).
+	if h.cfg.Secret != "" && !VerifyToken(h.cfg.Secret, roomID, req.URL.Query().Get("token"), time.Now().Unix()) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	conn, err := upgrader.Upgrade(w, req, nil)
 	if err != nil {
 		log.Printf("upgrade: %v", err)

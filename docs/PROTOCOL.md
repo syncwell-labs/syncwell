@@ -3,10 +3,15 @@
 Transport: **WebSocket**, one connection per client. Endpoint:
 
 ```
-GET /ws?room=<ROOM_ID>     (ROOM_ID defaults to "default")
+GET /ws?room=<ROOM_ID>[&token=<TOKEN>]   (ROOM_ID defaults to "default")
 ```
 
 All frames are **JSON text** messages. The protocol is intentionally tiny.
+
+**Auth (optional).** If the server was started with a `-secret`, the connection
+must carry a valid room `token` (`"<exp>.<hmac-sha256(secret, "room|exp")>"`),
+or the upgrade is rejected with `401`. A non-allow-listed `Origin` is rejected
+with `403`. With no secret configured, the endpoint is open (dev mode).
 
 As of Phase 2 the **client authors the timestamp** (each client holds its own
 CRDT replica and Lamport clock). The server is a merge-and-fan-out relay, not a

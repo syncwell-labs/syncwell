@@ -6,10 +6,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,7 +25,21 @@ func main() {
 	sdk := flag.String("sdk", "sdk", "directory of the client SDK to serve at /sdk/ (skipped if missing)")
 	data := flag.String("data", envOr("SYNCWELL_DATA", ""), "data directory for persistence (empty = in-memory)")
 	compact := flag.Int("compact", 256, "winning writes between maintenance passes (tombstone GC + compaction)")
+	secret := flag.String("secret", envOr("SYNCWELL_SECRET", ""), "HMAC secret for room tokens (empty = auth disabled)")
+	origins := flag.String("origins", envOr("SYNCWELL_ORIGINS", ""), "comma-separated allowed Origins (empty = allow any)")
+	maxClients := flag.Int("max-clients", 0, "max clients per room (0 = unlimited)")
+	mint := flag.String("mint", "", "issue a token for this room and exit (requires -secret)")
+	ttl := flag.Duration("ttl", 24*time.Hour, "token lifetime for -mint")
 	flag.Parse()
+
+	// Token-minting helper: `syncwell -secret S -mint room` prints a token.
+	if *mint != "" {
+		if *secret == "" {
+			log.Fatal("-mint requires -secret")
+		}
+		fmt.Println(server.SignToken(*secret, *mint, time.Now().Add(*ttl).Unix()))
+		return
+	}
 
 	var st store.Store
 	if *data != "" {
@@ -35,7 +51,20 @@ func main() {
 		log.Printf("persistence enabled at %s/", *data)
 	}
 
-	hub := server.NewHub(st, *compact)
+	var allowedOrigins []string
+	if *origins != "" {
+		allowedOrigins = strings.Split(*origins, ",")
+	}
+	hub := server.NewHub(server.Config{
+		Store:        st,
+		CompactEvery: *compact,
+		Secret:       *secret,
+		Origins:      allowedOrigins,
+		MaxClients:   *maxClients,
+	})
+	if *secret != "" {
+		log.Print("room-token auth enabled")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", hub.ServeWS)
 	mux.HandleFunc("/stats", hub.ServeStats)
