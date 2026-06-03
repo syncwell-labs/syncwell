@@ -1,0 +1,15 @@
+# Binaries
+/syncwell
+/bin/
+*.exe
+*.out
+/tmp/
+
+# Go
+/vendor/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.log
