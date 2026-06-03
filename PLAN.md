@@ -100,18 +100,17 @@ Bound memory (DESIGN.md §4).
 **DoD:** ✅ `make gc` churns 40 deletes and asserts tombstones collapse (to ~1)
 with the live key intact; unit test covers the collection predicate.
 
-### 2.4 Chaos/convergence test + benchmark (the headline numbers)  `[ ]`
-- [ ] Chaos test (Go): N simulated replicas; randomized op stream (set/delete on
-      overlapping keys); randomized partition/heal + duplicate/reordered delivery;
-      assert all replicas converge byte-identical after heal. Seeded for
-      reproducibility (no wall-clock/random-at-runtime in assertions).
-- [ ] Benchmark harness: spin up the server, drive K concurrent websocket
-      clients at a fixed op rate, measure end-to-end sync latency (p50/p95/p99)
-      and memory/room. Output a small table + optionally a chart.
-- [ ] Record results into README (replace the placeholder metrics) and capture a
-      GIF of the demo converging after a simulated partition.
+### 2.4 Chaos/convergence test + benchmark (the headline numbers)  `[x]` DONE
+- [x] Chaos test (Go): 5 replicas × 3000 ops, randomized set/delete on
+      overlapping keys, partition + shuffled + duplicated heal; asserts
+      byte-identical convergence to a reference. Seeded (5 seeds) → reproducible.
+- [x] Benchmark harness (`test/bench.mjs`): K concurrent clients, fixed publish
+      rate, measures p50/p95/p99 sync latency, throughput, and server RSS;
+      writes `docs/BENCHMARKS.md`.
+- [x] Real numbers in README (p50 1.3 / p99 3.6 ms, ~9k msg/s, 11.5 MB @ 50
+      clients). _GIF capture deferred to Phase 3 demo polish._
 
-**DoD:** `make chaos` and `make bench` exist and pass/produce numbers; README
+**DoD:** ✅ `make chaos` and `make bench` exist and pass/produce numbers; README
 shows real figures.
 
 ---

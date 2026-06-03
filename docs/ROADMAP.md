@@ -31,9 +31,10 @@ windows; tests are green.
 - [x] `merge` protocol frame (client ships state, server merges) — see PROTOCOL.md
 - [x] Persistence: snapshot + op-log to disk (embedded FileStore, `-data` flag)
 - [x] Tombstone **garbage collection** via stability low-water mark (DESIGN.md §4)
-- [ ] Chaos/fuzz test: randomized partitions + concurrent edits must converge
-- [ ] **Measure & publish:** sync latency p99 vs. concurrent-client count;
-      convergence-after-partition proof (record a GIF for the README)
+- [x] Chaos/fuzz test: randomized partitions + concurrent edits must converge
+- [x] **Measure & publish:** sync latency p50/p95/p99, throughput, RSS
+      (`make bench` → docs/BENCHMARKS.md, numbers in README)
+  - [ ] GIF of the demo converging after a partition (Phase 3 polish)
 
 **Why this is the senior signal:** this phase is where the architecture and the
 "how it breaks at scale" story (tombstone growth, partition recovery) become

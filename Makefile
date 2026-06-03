@@ -1,7 +1,7 @@
 BINARY := bin/syncwell
 PKG := ./cmd/syncwell
 
-.PHONY: all build run test test-js e2e persist gc vet fmt clean docker
+.PHONY: all build run test test-js e2e persist gc chaos bench vet fmt clean docker
 
 all: vet test test-js e2e persist gc build
 
@@ -31,6 +31,14 @@ persist: build
 # Tombstone-GC proof: churn deletes, verify tombstones are collected.
 gc: build
 	node test/gc_e2e.mjs
+
+# Adversarial convergence: many replicas, partitions, reorder, duplicates.
+chaos:
+	go test ./internal/crdt/ -run TestChaosConvergence -v
+
+# Latency/throughput benchmark; writes docs/BENCHMARKS.md.
+bench: build
+	node test/bench.mjs
 
 vet:
 	go vet ./...
