@@ -99,18 +99,35 @@ The trade-off is that one room's throughput is bounded by one core. That is fine
 until a single document is extremely hot; horizontal scaling (sharding rooms
 across nodes, then across processes) is the stretch goal in the roadmap.
 
-## 6. Server-authoritative stamping in Phase 1
+## 6. Client-authoritative timestamps (Phase 2 — shipped)
 
-In Phase 1 the **server** assigns timestamps (the room clock ticks on each op).
-This makes Phase 1 simple and correct: the server is a single sequencer, so the
-total order is trivially consistent, and clients can stay thin.
+Phase 1 was server-authoritative: the room clock stamped each write. That was a
+simple, correct starting point but it cannot support offline editing — a
+disconnected client has no server to stamp it.
 
-This is *not* the end state. True offline editing (Phase 2) requires the **client**
-to hold a CRDT and its own clock, edit locally while disconnected, and merge on
-reconnect. The data structures (`LWWMap`, `Clock`, `Merge`, `Snapshot`) are
-already designed for that — the same `Merge` runs identically on client and
-server. Phase 1 simply doesn't expose the client-side path yet. This staging is
-deliberate: ship a correct, demoable system first, then add offline.
+Phase 2 moves authority to the **client**. Each client holds its own `LWWMap`
+replica and Lamport `Clock` (`sdk/crdt.js`, a faithful mirror of the Go code).
+Writes:
+
+1. apply to the local replica **first** (optimistic — the UI updates with no
+   round-trip and keeps working offline), then
+2. are sent to the server as an `op` carrying the client-stamped register.
+
+The server becomes a merge-and-fan-out relay: it folds each incoming register
+into the room CRDT and broadcasts the winner. On (re)connect a client ships its
+full local state via a `merge` frame, so edits made while offline propagate, and
+receives a snapshot back so it converges with everything it missed.
+
+Because the *same* merge runs on both sides and is idempotent/commutative,
+reconnection needs no replay log or ack protocol — re-merging a snapshot cannot
+corrupt state. The end-to-end test in `test/offline_e2e.mjs` cuts a client's
+socket, edits on both sides, reconnects, and asserts byte-for-byte convergence.
+
+**Consequence worth stating plainly:** "last writer wins" is by *logical* clock,
+so a client that made several edits while offline can have a higher counter than
+a concurrent online edit and win the conflict — "last" is last in causal order,
+not wall-clock time (§3). For a collaboration tool this is the right trade-off;
+no edit is silently lost, and the outcome is deterministic across all replicas.
 
 ## 7. What is intentionally NOT here yet
 

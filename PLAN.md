@@ -1,0 +1,162 @@
+# Syncwell — Completion Plan (to 100%)
+
+This is the single source of truth for finishing Syncwell. It defines what
+"100% complete" means, breaks the remaining work into ordered, independently
+shippable slices, and gives each slice a concrete **Definition of Done (DoD)**
+so progress is unambiguous. Checkboxes are updated as work lands.
+
+> **North star:** the two hiring signals that survived the research were
+> *(1) real users + measurable impact* and *(2) demonstrated architecture &
+> justified trade-offs*. Every slice below exists to produce one or both. We do
+> not add scope that serves neither.
+
+---
+
+## Definition of "100% complete"
+
+Syncwell is done when ALL of the following are true:
+
+1. **Offline-capable:** a client can edit while disconnected and converge on
+   reconnect, with no lost edits and no manual conflict resolution.
+2. **Durable:** the server survives a restart with zero document loss.
+3. **Bounded memory:** tombstones are garbage-collected; a long-lived room does
+   not grow without bound.
+4. **Proven correct:** a chaos/fuzz suite randomizes partitions, duplication,
+   and concurrent edits and asserts convergence — green in CI.
+5. **Measured:** the README shows real numbers (sync latency p99 vs. concurrent
+   clients; convergence-after-partition; memory/room) produced by a committed
+   benchmark, not hand-waved.
+6. **Usable by others:** published client SDK, auth on rooms, one-command Docker
+   deploy, a hosted live demo URL.
+7. **Demoable:** a visually compelling collaborative app (kanban) that a
+   non-engineer immediately understands.
+8. **Documented & CI'd:** README, DESIGN, PROTOCOL, ROADMAP current; GitHub
+   Actions runs vet + race tests + benchmark on every push; badges green.
+
+When 1–8 hold, the project is launch-ready (Show HN / r/programming) and the
+remaining work is *distribution*, not engineering.
+
+---
+
+## Status legend
+`[ ]` not started `[~]` in progress `[x]` done
+
+---
+
+## Phase 1 — Shared state + presence  `[x]` DONE
+Already shipped and committed. Listed for completeness.
+- [x] LWW-Map CvRDT, zero deps
+- [x] Property tests: commutative / associative / idempotent / convergent
+- [x] WebSocket server, single-owner-goroutine room (lock-free)
+- [x] Presence relay; auto-reconnect SDK; runnable demo; single binary
+
+---
+
+## Phase 2 — Offline + durability (the depth + the numbers)
+
+### 2.1 Client-side CRDT & offline editing  `[x]` DONE
+Move authority for timestamps to the client so edits work offline and merge on
+reconnect. The same `LWWMap`/`Clock`/`Merge` runs on both sides.
+
+- [x] Port the CRDT to the SDK in JS (`sdk/crdt.js`): `LWWMap`, `Clock`, `merge`,
+      `snapshot` — mirror of the Go logic, with unit tests (`sdk/crdt.test.js`).
+- [x] SDK holds a local document; `set`/`delete` apply locally first (optimistic).
+      UI reads from the local doc via the `change` event, not the wire.
+- [x] New protocol frame `merge` (client→server) carrying client register state;
+      server merges into the room doc and re-broadcasts winners + a snapshot.
+      Client-authored `op` carries the stamped register.
+- [x] Offline path: while the socket is down, edits accumulate in the local CRDT;
+      on reconnect the client ships full state (`merge`) and pulls a snapshot.
+- [x] Clock authority moved client-side; server merges (no longer the sole
+      sequencer). DESIGN.md §6 + PROTOCOL.md updated.
+
+**DoD:** ✅ `make e2e` cuts a client's socket, edits on both sides, reconnects,
+and asserts byte-for-byte convergence with no lost edits.
+
+### 2.2 Persistence  `[ ]`
+Survive a restart.
+
+- [ ] `internal/store` interface: `Load(room) (snapshot, error)`,
+      `Append(room, op)`, `Snapshot(room, state)`.
+- [ ] Implementation: embedded, dependency-light (start with an append-only op-log
+      file per room + periodic compaction to a snapshot). No external DB required
+      to keep the single-binary story.
+- [ ] Room loads state on first access; writes are appended; periodic snapshot.
+- [ ] Wire it into the hub; server flag `-data <dir>` (empty = in-memory).
+
+**DoD:** start server, make edits, kill -9, restart → document intact. Test
+covers load-after-restart.
+
+### 2.3 Tombstone garbage collection  `[ ]`
+Bound memory (DESIGN.md §4).
+
+- [ ] Track a per-replica low-water mark (highest timestamp every connected
+      replica has acknowledged).
+- [ ] On compaction, drop tombstones strictly older than the cluster-wide
+      low-water mark (safe: no future write can causally precede it).
+- [ ] Expose room stats (entries, tombstones, bytes) on a `/stats` endpoint.
+
+**DoD:** a test that creates many delete/recreate cycles, advances the
+low-water mark, runs GC, and asserts tombstone count drops while live state is
+unchanged.
+
+### 2.4 Chaos/convergence test + benchmark (the headline numbers)  `[ ]`
+- [ ] Chaos test (Go): N simulated replicas; randomized op stream (set/delete on
+      overlapping keys); randomized partition/heal + duplicate/reordered delivery;
+      assert all replicas converge byte-identical after heal. Seeded for
+      reproducibility (no wall-clock/random-at-runtime in assertions).
+- [ ] Benchmark harness: spin up the server, drive K concurrent websocket
+      clients at a fixed op rate, measure end-to-end sync latency (p50/p95/p99)
+      and memory/room. Output a small table + optionally a chart.
+- [ ] Record results into README (replace the placeholder metrics) and capture a
+      GIF of the demo converging after a simulated partition.
+
+**DoD:** `make chaos` and `make bench` exist and pass/produce numbers; README
+shows real figures.
+
+---
+
+## Phase 3 — Make it real (distribution + polish)
+
+### 3.1 Auth & hardening  `[ ]`
+- [ ] Room access tokens (signed); `CheckOrigin` all-list via config.
+- [ ] Per-connection rate limiting / message-size already capped — add per-room
+      client cap and basic abuse guards.
+- [ ] Graceful shutdown (drain rooms, flush persistence).
+
+### 3.2 Packaging & deploy  `[ ]`
+- [ ] Publish the client SDK as an npm package (`syncwell-client`).
+- [ ] Finalize Docker image; `docker run` one-liner in README.
+- [ ] Deploy a hosted live demo; put the URL in README. (Fly.io/Render/VPS —
+      single static binary makes this trivial.)
+- [ ] GitHub Actions: vet + `go test -race` + chaos + bench on push; badges.
+
+### 3.3 Flagship demo  `[ ]`
+- [ ] Collaborative **kanban board** demo (drag cards, live cursors, presence
+      avatars) built on the SDK — visually obvious multiplayer.
+- [ ] Keep the simple text demo as the "hello world".
+
+### 3.4 Docs & launch prep  `[ ]`
+- [ ] README: final positioning, real numbers, GIF, quickstart, deploy.
+- [ ] DESIGN.md: bring §6 and §4 up to date with what shipped.
+- [ ] A short write-up of the CRDT design (the basis of the Show HN / dev.to post).
+- [ ] CONTRIBUTING.md + issue templates (signals an inviting OSS project).
+
+---
+
+## Stretch (only if the above is fully done)
+- [ ] Horizontal scaling: shard rooms across nodes via a pub/sub backbone.
+- [ ] Sequence CRDT (RGA/Yjs-style) for character-level collaborative text.
+
+---
+
+## Execution order (what I build, in sequence)
+1. **2.1 client-side CRDT + offline** ← start here (the core depth)
+2. **2.2 persistence** (needed before GC is meaningful)
+3. **2.3 tombstone GC**
+4. **2.4 chaos test + benchmark** (turns the above into headline numbers)
+5. **3.3 kanban demo** (make the depth visible)
+6. **3.1 auth + 3.2 deploy + CI** (ship it)
+7. **3.4 docs + launch prep**
+
+Each step ends green (vet + race tests) and is committed before the next begins.

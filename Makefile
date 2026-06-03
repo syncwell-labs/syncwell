@@ -1,9 +1,9 @@
 BINARY := bin/syncwell
 PKG := ./cmd/syncwell
 
-.PHONY: all build run test vet fmt clean docker
+.PHONY: all build run test test-js e2e vet fmt clean docker
 
-all: vet test build
+all: vet test test-js e2e build
 
 build:
 	@mkdir -p bin
@@ -15,6 +15,14 @@ run:
 
 test:
 	go test ./... -race -count=1
+
+# JS CRDT unit tests (mirror of the Go laws).
+test-js:
+	cd sdk && node --test
+
+# End-to-end offline-convergence proof against the real server binary.
+e2e: build
+	node test/offline_e2e.mjs
 
 vet:
 	go vet ./...

@@ -64,8 +64,8 @@ func (c *Client) readPump(conn *websocket.Conn) {
 			continue // ignore malformed frames rather than dropping the client
 		}
 		switch in.Type {
-		case "set", "delete":
-			c.room.cmds <- command{kind: "op", client: c, in: in}
+		case "op", "merge":
+			c.room.cmds <- command{kind: in.Type, client: c, in: in}
 		case "presence":
 			c.room.cmds <- command{kind: "presence", client: c, in: in}
 		}

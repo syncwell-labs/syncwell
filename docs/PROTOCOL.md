@@ -1,4 +1,4 @@
-# Syncwell Wire Protocol (v0, Phase 1)
+# Syncwell Wire Protocol (v0.2, Phase 2)
 
 Transport: **WebSocket**, one connection per client. Endpoint:
 
@@ -8,21 +8,31 @@ GET /ws?room=<ROOM_ID>     (ROOM_ID defaults to "default")
 
 All frames are **JSON text** messages. The protocol is intentionally tiny.
 
+As of Phase 2 the **client authors the timestamp** (each client holds its own
+CRDT replica and Lamport clock). The server is a merge-and-fan-out relay, not a
+sequencer. This is what makes offline editing possible.
+
+A **register** is `{ "v": <value>, "t": { "c": <counter>, "n": <node> }, "d"?: true }`.
+
 ---
 
 ## Client → Server
 
-### `set` — write a value
+### `op` — a single write (already stamped by the client)
 ```json
-{ "type": "set", "key": "title", "value": <any JSON> }
+{ "type": "op", "key": "title", "register": { "v": "Hello", "t": { "c": 8, "n": "c-1a2b" } } }
 ```
-The server stamps the write with the room's logical clock, applies it to the
-CRDT, and broadcasts an `op` to every client.
+A delete is the same frame with a tombstone register: `{ "t": {...}, "d": true }`.
+The server merges the register into the room CRDT and broadcasts the winner.
 
-### `delete` — tombstone a key
+### `merge` — full client state, sent on (re)connect
 ```json
-{ "type": "delete", "key": "title" }
+{ "type": "merge", "state": { "title": { "v": "Hello", "t": { "c": 8, "n": "c-1a2b" } } } }
 ```
+This is how edits made **while offline** propagate. The server merges the whole
+state, broadcasts any new winners to the other clients, and replies to the
+sender with a fresh `snapshot` so it converges with everything it missed. A
+fresh client with no local state skips this frame.
 
 ### `presence` — ephemeral broadcast (not persisted)
 ```json
@@ -75,8 +85,6 @@ A tombstone op carries `"register": { "t": {...}, "d": true }`.
   writes the server had committed, so no acknowledgement/replay protocol is
   required in Phase 1.
 
-## Planned protocol changes (Phase 2)
+## Planned protocol changes (Phase 2.3+)
 
-- A client→server `merge` frame carrying client-side CRDT state, to support
-  offline editing (client holds its own clock and document).
 - A low-water-mark `ack` frame to drive tombstone garbage collection.

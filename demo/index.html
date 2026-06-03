@@ -57,11 +57,11 @@
         }
       }
 
-      // Apply incoming state to the inputs without clobbering the caret if we
-      // are the origin of the change (best-effort for the demo).
-      function applyKey(key, value) {
-        if (key === "title" && document.activeElement !== titleEl) titleEl.value = value ?? "";
-        if (key === "doc" && document.activeElement !== docEl) docEl.value = value ?? "";
+      // Render the local replica into the inputs, without clobbering the caret
+      // of a field the user is actively typing in.
+      function render(live) {
+        if (document.activeElement !== titleEl) titleEl.value = live.title ?? "";
+        if (document.activeElement !== docEl) docEl.value = live.doc ?? "";
       }
 
       sw.on("open", () => {
@@ -70,15 +70,12 @@
         sw.presence({ hue: myHue });
       });
       sw.on("close", () => {
-        statusEl.textContent = "reconnecting…";
+        statusEl.textContent = "offline — editing locally, will resync…";
         statusEl.className = "";
       });
-      sw.on("snapshot", ({ state }) => {
-        for (const [key, reg] of Object.entries(state || {})) {
-          if (!reg.d) applyKey(key, reg.v);
-        }
-      });
-      sw.on("op", ({ key, register }) => applyKey(key, register.d ? "" : register.v));
+      // One event for all state changes (local optimistic writes and remote
+      // ops both flow through the local CRDT).
+      sw.on("change", render);
       sw.on("presence", ({ clientId, data }) => {
         if (data?.hue != null) {
           peers.set(clientId, data.hue);

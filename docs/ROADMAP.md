@@ -27,8 +27,8 @@ windows; tests are green.
 
 **Goal:** edit while disconnected, reconnect, converge; survive a restart.
 
-- [ ] Client-side CRDT: move the clock to the client; edit locally while offline
-- [ ] `merge` protocol frame (client ships state, server merges) — see PROTOCOL.md
+- [x] Client-side CRDT: move the clock to the client; edit locally while offline
+- [x] `merge` protocol frame (client ships state, server merges) — see PROTOCOL.md
 - [ ] Persistence: snapshot + op-log to disk (start with an embedded store)
 - [ ] Tombstone **garbage collection** via stability low-water mark (DESIGN.md §4)
 - [ ] Chaos/fuzz test: randomized partitions + concurrent edits must converge

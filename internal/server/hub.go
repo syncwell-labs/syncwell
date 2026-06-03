@@ -18,12 +18,15 @@ const (
 	msgLeave    = "leave"    // a client disconnected
 )
 
-// Inbound is a message from a client.
+// Inbound is a message from a client. As of Phase 2 the client authors the
+// timestamp (client-side CRDT), so an `op` carries a full register rather than
+// a bare value, and a `merge` carries the client's full state on (re)connect.
 type Inbound struct {
-	Type  string          `json:"type"`            // "set" | "delete" | "presence"
-	Key   string          `json:"key,omitempty"`   // for set/delete
-	Value json.RawMessage `json:"value,omitempty"` // for set
-	Data  json.RawMessage `json:"data,omitempty"`  // for presence
+	Type     string                   `json:"type"`             // "op" | "merge" | "presence"
+	Key      string                   `json:"key,omitempty"`    // for op
+	Register *crdt.Register           `json:"register,omitempty"` // for op
+	State    map[string]crdt.Register `json:"state,omitempty"`  // for merge
+	Data     json.RawMessage          `json:"data,omitempty"`   // for presence
 }
 
 // Outbound is a message to a client.
@@ -92,18 +95,33 @@ func (r *Room) loop() {
 			}
 
 		case "op":
-			// Server-authoritative stamping: the room clock assigns a total
-			// order to every write in Phase 1. (Phase 2 moves the clock to the
-			// client to support offline edits — see docs/ROADMAP.md.)
-			ts := r.clock.Tick()
-			switch c.in.Type {
-			case "set":
-				r.doc.Set(c.in.Key, c.in.Value, ts)
-			case "delete":
-				r.doc.Delete(c.in.Key, ts)
+			// Client-authoritative: the write already carries the client's
+			// logical timestamp. The server merges it (CRDT join), advances its
+			// own clock so future server-side stamps stay causal, and broadcasts
+			// the winning register to everyone — including the sender, which is
+			// harmless because applying it is idempotent.
+			if c.in.Register != nil {
+				r.clock.Observe(c.in.Register.TS)
+				r.doc.ApplyRegister(c.in.Key, *c.in.Register)
+				reg, _ := r.doc.Entry(c.in.Key)
+				r.broadcast(Outbound{Type: msgOp, Key: c.in.Key, Register: &reg}, nil)
 			}
-			reg := r.doc.Snapshot()[c.in.Key]
-			r.broadcast(Outbound{Type: msgOp, Key: c.in.Key, Register: &reg}, nil)
+
+		case "merge":
+			// A (re)connecting client ships its full local state — this is how
+			// edits made while offline propagate. Merge each register, broadcast
+			// the winners to the other clients, then send the merging client a
+			// fresh snapshot so it converges with everything it missed.
+			for k, reg := range c.in.State {
+				r.clock.Observe(reg.TS)
+				r.doc.ApplyRegister(k, reg)
+			}
+			for k := range c.in.State {
+				reg, _ := r.doc.Entry(k)
+				winner := reg
+				r.broadcast(Outbound{Type: msgOp, Key: k, Register: &winner}, c.client)
+			}
+			r.sendTo(c.client, Outbound{Type: msgSnapshot, State: r.doc.Snapshot()})
 
 		case "presence":
 			r.broadcast(Outbound{Type: msgPresence, ClientID: c.client.id, Data: c.in.Data}, c.client)

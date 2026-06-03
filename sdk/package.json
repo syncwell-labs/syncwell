@@ -1,0 +1,16 @@
+{
+  "name": "syncwell-client",
+  "version": "0.2.0",
+  "description": "Zero-dependency browser/Node client for the Syncwell real-time collaboration engine.",
+  "type": "module",
+  "main": "syncwell.js",
+  "exports": {
+    ".": "./syncwell.js",
+    "./crdt": "./crdt.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "files": ["syncwell.js", "crdt.js"]
+}

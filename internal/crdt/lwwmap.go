@@ -74,6 +74,17 @@ func (m *LWWMap) Merge(other *LWWMap) {
 	}
 }
 
+// ApplyRegister merges a single incoming register for key — the per-key CRDT
+// join. Used by the server to fold a client-authored write into the room doc,
+// and by the op-log replay path.
+func (m *LWWMap) ApplyRegister(key string, r Register) { m.apply(key, r) }
+
+// Entry returns the raw register for key (including tombstones), if present.
+func (m *LWWMap) Entry(key string) (Register, bool) {
+	r, ok := m.entries[key]
+	return r, ok
+}
+
 // Snapshot returns a copy of the raw register state, including tombstones, for
 // persistence or for sending full state to a newly-connected client.
 func (m *LWWMap) Snapshot() map[string]Register {
