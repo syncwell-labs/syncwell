@@ -22,6 +22,13 @@ const (
 	maxMsg     = 1 << 20 // 1 MiB read cap per message
 )
 
+// ServeStats writes per-room statistics as JSON (live keys, tombstones, clients,
+// GC low-water mark).
+func (h *Hub) ServeStats(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(h.Stats())
+}
+
 // ServeWS upgrades an HTTP request to a websocket and attaches it to the room
 // named by ?room=ID (default "default").
 func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
@@ -66,8 +73,8 @@ func (c *Client) readPump(conn *websocket.Conn) {
 		switch in.Type {
 		case "op", "merge":
 			c.room.cmds <- command{kind: in.Type, client: c, in: in}
-		case "presence":
-			c.room.cmds <- command{kind: "presence", client: c, in: in}
+		case "presence", "ack":
+			c.room.cmds <- command{kind: in.Type, client: c, in: in}
 		}
 	}
 }

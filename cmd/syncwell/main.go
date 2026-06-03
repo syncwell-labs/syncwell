@@ -22,6 +22,7 @@ func main() {
 	static := flag.String("static", "demo", "directory of static files to serve at / (skipped if missing)")
 	sdk := flag.String("sdk", "sdk", "directory of the client SDK to serve at /sdk/ (skipped if missing)")
 	data := flag.String("data", envOr("SYNCWELL_DATA", ""), "data directory for persistence (empty = in-memory)")
+	compact := flag.Int("compact", 256, "winning writes between maintenance passes (tombstone GC + compaction)")
 	flag.Parse()
 
 	var st store.Store
@@ -34,9 +35,10 @@ func main() {
 		log.Printf("persistence enabled at %s/", *data)
 	}
 
-	hub := server.NewHub(st)
+	hub := server.NewHub(st, *compact)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", hub.ServeWS)
+	mux.HandleFunc("/stats", hub.ServeStats)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

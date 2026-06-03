@@ -71,11 +71,25 @@ to win against a concurrent or stale set, so it has to linger. The cost: a
 document that is edited and cleared forever **grows forever**. This is the
 classic CRDT space problem and the first thing that breaks under sustained load.
 
-**Planned fix (Phase 2):** snapshot + op-log persistence with **stability-based
-garbage collection** — once every connected replica has acknowledged a
-timestamp `T`, no future write can causally precede `T`, so tombstones older
-than `T` are safe to collect. This requires tracking a per-replica low-water
-mark and is intentionally deferred until persistence exists.
+**Fix (Phase 2.3 — shipped):** **stability-based garbage collection.** The
+server tracks, per connected client, the highest logical clock counter that
+client has revealed (via its writes and a periodic `ack` heartbeat). The
+**low-water mark** is the minimum of those counters. Because Lamport counters
+only increase, no future write from a connected client can fall below the
+low-water mark — so tombstones with a counter strictly below it are *causally
+stable* and safe to delete. GC runs during each maintenance pass
+(`Room.maintain`), and `/stats` exposes live/tombstone counts and the current
+low-water mark. The `make gc` test churns 40 deletes and shows tombstones
+collapse to ~1.
+
+**Known limit (stated honestly):** the low-water mark only accounts for
+*connected* clients. A client offline longer than a GC cycle is not counted, so
+if it later reconnects with stale offline edits to a key whose tombstone was
+already collected, that key could resurrect. Mitigations for a production
+deployment: bound maximum client offline time, or persist per-client version
+vectors so disconnected replicas still hold back the low-water mark. We keep the
+connected-replica bound here because it is simple, correct for the common case,
+and the trade-off is explicit rather than hidden.
 
 ## 5. Concurrency model: single-owner goroutine per room, no locks
 

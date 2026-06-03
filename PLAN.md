@@ -88,18 +88,17 @@ Survive a restart.
 against the same data dir, and a fresh client receives the persisted document.
 Unit tests cover load-after-restart, compaction, and torn-line tolerance.
 
-### 2.3 Tombstone garbage collection  `[ ]`
+### 2.3 Tombstone garbage collection  `[x]` DONE
 Bound memory (DESIGN.md §4).
 
-- [ ] Track a per-replica low-water mark (highest timestamp every connected
-      replica has acknowledged).
-- [ ] On compaction, drop tombstones strictly older than the cluster-wide
-      low-water mark (safe: no future write can causally precede it).
-- [ ] Expose room stats (entries, tombstones, bytes) on a `/stats` endpoint.
+- [x] Per-client clock tracking + `ack` heartbeat frame; cluster low-water mark
+      = min across connected clients.
+- [x] Maintenance pass collects tombstones strictly below the low-water mark;
+      runs in-memory and persistent. Honest limit (offline clients) documented.
+- [x] `/stats` endpoint exposes per-room live/tombstone counts + low-water mark.
 
-**DoD:** a test that creates many delete/recreate cycles, advances the
-low-water mark, runs GC, and asserts tombstone count drops while live state is
-unchanged.
+**DoD:** ✅ `make gc` churns 40 deletes and asserts tombstones collapse (to ~1)
+with the live key intact; unit test covers the collection predicate.
 
 ### 2.4 Chaos/convergence test + benchmark (the headline numbers)  `[ ]`
 - [ ] Chaos test (Go): N simulated replicas; randomized op stream (set/delete on

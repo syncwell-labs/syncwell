@@ -67,9 +67,14 @@ export class Syncwell {
       // via the join handler, so we skip the redundant round-trip.)
       const state = this.doc.snapshot();
       if (Object.keys(state).length) this._send({ type: "merge", state });
+      this._ack();
+      // Heartbeat: advertise our clock so the server's GC low-water mark can
+      // advance even when we're idle.
+      this._ackTimer = setInterval(() => this._ack(), 3000);
       this._emit("open");
     };
     this.ws.onclose = () => {
+      clearInterval(this._ackTimer);
       this._emit("close");
       if (this._closed) return;
       setTimeout(() => this.connect(), this._reconnectDelay);
@@ -82,6 +87,7 @@ export class Syncwell {
 
   close() {
     this._closed = true;
+    clearInterval(this._ackTimer);
     if (this.ws) this.ws.close();
   }
 
@@ -90,6 +96,9 @@ export class Syncwell {
   }
   _send(obj) {
     if (this._connected()) this.ws.send(JSON.stringify(obj));
+  }
+  _ack() {
+    this._send({ type: "ack", clock: this.clock.counter });
   }
 
   _recv(msg) {

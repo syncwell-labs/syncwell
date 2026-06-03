@@ -30,7 +30,7 @@ windows; tests are green.
 - [x] Client-side CRDT: move the clock to the client; edit locally while offline
 - [x] `merge` protocol frame (client ships state, server merges) — see PROTOCOL.md
 - [x] Persistence: snapshot + op-log to disk (embedded FileStore, `-data` flag)
-- [ ] Tombstone **garbage collection** via stability low-water mark (DESIGN.md §4)
+- [x] Tombstone **garbage collection** via stability low-water mark (DESIGN.md §4)
 - [ ] Chaos/fuzz test: randomized partitions + concurrent edits must converge
 - [ ] **Measure & publish:** sync latency p99 vs. concurrent-client count;
       convergence-after-partition proof (record a GIF for the README)

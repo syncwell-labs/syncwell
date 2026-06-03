@@ -1,9 +1,9 @@
 BINARY := bin/syncwell
 PKG := ./cmd/syncwell
 
-.PHONY: all build run test test-js e2e persist vet fmt clean docker
+.PHONY: all build run test test-js e2e persist gc vet fmt clean docker
 
-all: vet test test-js e2e persist build
+all: vet test test-js e2e persist gc build
 
 build:
 	@mkdir -p bin
@@ -27,6 +27,10 @@ e2e: build
 # Durability proof: write, SIGKILL the server, restart, verify state survived.
 persist: build
 	node test/persist_e2e.mjs
+
+# Tombstone-GC proof: churn deletes, verify tombstones are collected.
+gc: build
+	node test/gc_e2e.mjs
 
 vet:
 	go vet ./...

@@ -11,8 +11,9 @@ import (
 	"syncwell/internal/store"
 )
 
-// compactEvery is how many persisted writes trigger a snapshot compaction.
-const compactEvery = 256
+// defaultCompactEvery is how many winning writes trigger a maintenance pass
+// (tombstone GC + snapshot compaction). Configurable via NewHub.
+const defaultCompactEvery = 256
 
 // Wire message type tags (server -> client).
 const (
@@ -26,11 +27,20 @@ const (
 // timestamp (client-side CRDT), so an `op` carries a full register rather than
 // a bare value, and a `merge` carries the client's full state on (re)connect.
 type Inbound struct {
-	Type     string                   `json:"type"`             // "op" | "merge" | "presence"
-	Key      string                   `json:"key,omitempty"`    // for op
+	Type     string                   `json:"type"`               // "op" | "merge" | "presence" | "ack"
+	Key      string                   `json:"key,omitempty"`      // for op
 	Register *crdt.Register           `json:"register,omitempty"` // for op
-	State    map[string]crdt.Register `json:"state,omitempty"`  // for merge
-	Data     json.RawMessage          `json:"data,omitempty"`   // for presence
+	State    map[string]crdt.Register `json:"state,omitempty"`    // for merge
+	Data     json.RawMessage          `json:"data,omitempty"`     // for presence
+	Clock    uint64                   `json:"clock,omitempty"`    // for ack: client's current clock counter
+}
+
+// RoomStats is a point-in-time view of a room, exposed at /stats.
+type RoomStats struct {
+	Clients    int    `json:"clients"`
+	Live       int    `json:"live"`
+	Tombstones int    `json:"tombstones"`
+	LowWater   uint64 `json:"lowWater"`
 }
 
 // Outbound is a message to a client.
@@ -55,9 +65,10 @@ type Client struct {
 // mutation of room state happens inside that goroutine, so the document needs
 // no locks — concurrency is structured as message passing, not shared memory.
 type command struct {
-	kind   string // "join" | "leave" | "op" | "presence"
+	kind   string // "join" | "leave" | "op" | "merge" | "presence" | "ack" | "stats"
 	client *Client
 	in     Inbound
+	reply  chan RoomStats // for "stats"
 }
 
 // Room is one collaborative document: a CRDT plus the set of connected clients.
@@ -66,19 +77,23 @@ type Room struct {
 	doc             *crdt.LWWMap
 	clock           *crdt.Clock
 	clients         map[*Client]bool
+	acked           map[*Client]uint64 // last clock counter each client has acknowledged
 	cmds            chan command
 	store           store.Store
+	compactEvery    int
 	opsSinceCompact int
 }
 
-func newRoom(id string, st store.Store) *Room {
+func newRoom(id string, st store.Store, compactEvery int) *Room {
 	r := &Room{
-		id:      id,
-		doc:     crdt.NewLWWMap(),
-		clock:   crdt.NewClock("server:" + id),
-		clients: map[*Client]bool{},
-		cmds:    make(chan command, 64),
-		store:   st,
+		id:           id,
+		doc:          crdt.NewLWWMap(),
+		clock:        crdt.NewClock("server:" + id),
+		clients:      map[*Client]bool{},
+		acked:        map[*Client]uint64{},
+		cmds:         make(chan command, 64),
+		store:        st,
+		compactEvery: compactEvery,
 	}
 	// Restore persisted state so a restart loses nothing.
 	if st != nil {
@@ -96,32 +111,65 @@ func newRoom(id string, st store.Store) *Room {
 }
 
 // applyAndPersist merges an incoming register, durably records it if it won,
-// and returns the current (winning) register for broadcast.
+// triggers periodic maintenance, and returns the current (winning) register.
 func (r *Room) applyAndPersist(key string, reg crdt.Register) crdt.Register {
 	r.clock.Observe(reg.TS)
 	r.doc.ApplyRegister(key, reg)
 	cur, _ := r.doc.Entry(key)
-	if cur.TS == reg.TS { // the incoming write won — persist it
-		r.persist(key, cur)
+	if cur.TS == reg.TS { // the incoming write won
+		if r.store != nil {
+			if err := r.store.Append(r.id, store.Record{Key: key, Reg: cur}); err != nil {
+				log.Printf("room %s: persist: %v", r.id, err)
+			}
+		}
+		if r.opsSinceCompact++; r.opsSinceCompact >= r.compactEvery {
+			r.maintain()
+			r.opsSinceCompact = 0
+		}
 	}
 	return cur
 }
 
-func (r *Room) persist(key string, reg crdt.Register) {
-	if r.store == nil {
-		return
-	}
-	if err := r.store.Append(r.id, store.Record{Key: key, Reg: reg}); err != nil {
-		log.Printf("room %s: persist: %v", r.id, err)
-		return
-	}
-	if r.opsSinceCompact++; r.opsSinceCompact >= compactEvery {
-		if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
-			log.Printf("room %s: compact: %v", r.id, err)
-		} else {
-			r.opsSinceCompact = 0
+// maintain runs the periodic housekeeping: garbage-collect tombstones that are
+// causally stable, then (if persistent) compact the op-log to a snapshot. GC and
+// compaction run regardless of persistence so memory stays bounded in-memory too.
+func (r *Room) maintain() {
+	if lw := r.lowWater(); lw > 0 {
+		if n := r.doc.CollectTombstones(lw); n > 0 {
+			log.Printf("room %s: gc collected %d tombstones below low-water %d", r.id, n, lw)
 		}
 	}
+	if r.store != nil {
+		if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
+			log.Printf("room %s: compact: %v", r.id, err)
+		}
+	}
+}
+
+// noteClock records the highest logical clock value a client has revealed.
+func (r *Room) noteClock(cl *Client, counter uint64) {
+	if counter > r.acked[cl] {
+		r.acked[cl] = counter
+	}
+}
+
+// lowWater is the causal-stability bound: the minimum clock counter across all
+// connected clients. No future write from a connected client can fall below it
+// (Lamport counters only increase), so tombstones older than it are safe to GC.
+// Returns 0 (GC disabled) whenever a client has not yet revealed its clock, which
+// keeps the bound conservative while clients are catching up. The known limit:
+// a client offline longer than a GC cycle is not counted — see DESIGN.md §4.
+func (r *Room) lowWater() uint64 {
+	if len(r.acked) == 0 {
+		return 0
+	}
+	min := ^uint64(0)
+	for _, c := range r.acked {
+		if c < min {
+			min = c
+		}
+	}
+	return min
 }
 
 // loop is the room's single owner goroutine. It is the *only* place that reads
@@ -132,11 +180,13 @@ func (r *Room) loop() {
 		switch c.kind {
 		case "join":
 			r.clients[c.client] = true
+			r.acked[c.client] = 0
 			r.sendTo(c.client, Outbound{Type: msgSnapshot, State: r.doc.Snapshot()})
 
 		case "leave":
 			if _, ok := r.clients[c.client]; ok {
 				delete(r.clients, c.client)
+				delete(r.acked, c.client)
 				close(c.client.send)
 				r.broadcast(Outbound{Type: msgLeave, ClientID: c.client.id}, nil)
 			}
@@ -148,6 +198,7 @@ func (r *Room) loop() {
 			// the winning register to everyone — including the sender, which is
 			// harmless because applying it is idempotent.
 			if c.in.Register != nil {
+				r.noteClock(c.client, c.in.Register.TS.Counter)
 				winner := r.applyAndPersist(c.in.Key, *c.in.Register)
 				r.broadcast(Outbound{Type: msgOp, Key: c.in.Key, Register: &winner}, nil)
 			}
@@ -157,14 +208,28 @@ func (r *Room) loop() {
 			// edits made while offline propagate. Merge each register, broadcast
 			// the winners to the other clients, then send the merging client a
 			// fresh snapshot so it converges with everything it missed.
+			var maxCounter uint64
 			for k, reg := range c.in.State {
+				if reg.TS.Counter > maxCounter {
+					maxCounter = reg.TS.Counter
+				}
 				winner := r.applyAndPersist(k, reg)
 				r.broadcast(Outbound{Type: msgOp, Key: k, Register: &winner}, c.client)
 			}
+			r.noteClock(c.client, maxCounter)
 			r.sendTo(c.client, Outbound{Type: msgSnapshot, State: r.doc.Snapshot()})
+
+		case "ack":
+			// Idle clients advertise their clock so the GC low-water mark can
+			// advance even when they aren't writing.
+			r.noteClock(c.client, c.in.Clock)
 
 		case "presence":
 			r.broadcast(Outbound{Type: msgPresence, ClientID: c.client.id, Data: c.in.Data}, c.client)
+
+		case "stats":
+			s := r.doc.Stats()
+			c.reply <- RoomStats{Clients: len(r.clients), Live: s.Live, Tombstones: s.Tombstones, LowWater: r.lowWater()}
 		}
 	}
 }
@@ -206,14 +271,19 @@ func (r *Room) deliver(cl *Client, b []byte) {
 
 // Hub multiplexes rooms by id, creating them lazily on first join.
 type Hub struct {
-	mu    sync.Mutex
-	rooms map[string]*Room
-	store store.Store // nil = in-memory only
+	mu           sync.Mutex
+	rooms        map[string]*Room
+	store        store.Store // nil = in-memory only
+	compactEvery int
 }
 
 // NewHub returns a hub backed by st (pass nil for in-memory operation).
-func NewHub(st store.Store) *Hub {
-	return &Hub{rooms: map[string]*Room{}, store: st}
+// compactEvery sets the maintenance interval; <=0 uses the default.
+func NewHub(st store.Store, compactEvery int) *Hub {
+	if compactEvery <= 0 {
+		compactEvery = defaultCompactEvery
+	}
+	return &Hub{rooms: map[string]*Room{}, store: st, compactEvery: compactEvery}
 }
 
 func (h *Hub) room(id string) *Room {
@@ -221,10 +291,32 @@ func (h *Hub) room(id string) *Room {
 	defer h.mu.Unlock()
 	r, ok := h.rooms[id]
 	if !ok {
-		r = newRoom(id, h.store)
+		r = newRoom(id, h.store, h.compactEvery)
 		h.rooms[id] = r
 	}
 	return r
+}
+
+// Stats queries every room's owner goroutine and returns a snapshot map. Safe to
+// call from an HTTP handler — it communicates with rooms by message, not shared
+// memory.
+func (h *Hub) Stats() map[string]RoomStats {
+	h.mu.Lock()
+	ids := make([]string, 0, len(h.rooms))
+	rooms := make([]*Room, 0, len(h.rooms))
+	for id, r := range h.rooms {
+		ids = append(ids, id)
+		rooms = append(rooms, r)
+	}
+	h.mu.Unlock()
+
+	out := make(map[string]RoomStats, len(rooms))
+	for i, r := range rooms {
+		reply := make(chan RoomStats, 1)
+		r.cmds <- command{kind: "stats", reply: reply}
+		out[ids[i]] = <-reply
+	}
+	return out
 }
 
 var clientSeq uint64

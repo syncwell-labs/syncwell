@@ -41,6 +41,13 @@ fresh client with no local state skips this frame.
 Relayed to all *other* clients as a `presence` message. Used for cursors,
 selections, and who's-online. Never stored, never replayed on join.
 
+### `ack` — advertise the client's logical clock (GC heartbeat)
+```json
+{ "type": "ack", "clock": 81 }
+```
+Sent on connect and on a periodic heartbeat. Lets the server advance the
+tombstone-GC low-water mark even for idle clients. No response.
+
 ---
 
 ## Server → Client
@@ -85,6 +92,7 @@ A tombstone op carries `"register": { "t": {...}, "d": true }`.
   writes the server had committed, so no acknowledgement/replay protocol is
   required in Phase 1.
 
-## Planned protocol changes (Phase 2.3+)
+## HTTP endpoints
 
-- A low-water-mark `ack` frame to drive tombstone garbage collection.
+- `GET /healthz` → `ok`
+- `GET /stats` → JSON map of `room → { clients, live, tombstones, lowWater }`

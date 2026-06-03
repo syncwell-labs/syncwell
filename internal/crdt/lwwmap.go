@@ -114,6 +114,41 @@ func (m *LWWMap) Live() map[string]json.RawMessage {
 	return out
 }
 
+// CollectTombstones removes tombstone entries whose timestamp counter is
+// strictly below `below`, returning the number removed. `below` MUST be a
+// causal-stability low-water mark — a counter no future write can fall beneath —
+// otherwise a delayed stale write could resurrect a collected key. See
+// DESIGN.md §4 for how the server computes that bound.
+func (m *LWWMap) CollectTombstones(below uint64) int {
+	n := 0
+	for k, r := range m.entries {
+		if r.Deleted && r.TS.Counter < below {
+			delete(m.entries, k)
+			n++
+		}
+	}
+	return n
+}
+
+// Stats reports live vs. tombstone entry counts.
+type Stats struct {
+	Live       int `json:"live"`
+	Tombstones int `json:"tombstones"`
+}
+
+// Stats returns the current live/tombstone breakdown.
+func (m *LWWMap) Stats() Stats {
+	var s Stats
+	for _, r := range m.entries {
+		if r.Deleted {
+			s.Tombstones++
+		} else {
+			s.Live++
+		}
+	}
+	return s
+}
+
 // Keys returns the sorted live keys for deterministic iteration.
 func (m *LWWMap) Keys() []string {
 	ks := make([]string, 0, len(m.entries))
