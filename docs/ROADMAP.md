@@ -47,13 +47,14 @@ code to a hiring manager.
 
 **Goal:** other people run it.
 
-- [ ] Polished SDK + docs site; npm package for the client
-- [ ] Auth hooks (room tokens; lock down `CheckOrigin`)
-- [ ] Single Docker image + one-command deploy; hosted live demo URL
-- [ ] A second, visually compelling demo (collaborative kanban or text editor)
-- [ ] Launch: "Show HN", r/programming, dev.to writeup of the CRDT design
-- [ ] **Track real numbers:** GitHub stars, Docker pulls, self-hosting users —
-      put them at the top of the README
+- [x] SDK packaged as `syncwell-client` (+ sdk/README.md); npm-publish-ready
+- [x] Auth hooks: room tokens (`-secret`/`-mint`), Origin allow-list, client cap
+- [x] Single Docker image (multi-stage, distroless) + one-command run
+- [x] Collaborative kanban demo (`demo/kanban.html`)
+- [x] CI (GitHub Actions) running the full suite + chaos + bench
+- [x] Launch write-up drafted (`docs/BLOG.md`) for Show HN / dev.to
+- [ ] **Owner-only steps:** push to GitHub, `npm publish`, deploy hosted demo,
+      then track stars / Docker pulls / self-hosting users in the README
 
 ---
 

@@ -7,7 +7,7 @@ import "testing"
 func TestCollectTombstones(t *testing.T) {
 	m := NewLWWMap()
 	m.Set("live-old", val("a"), Timestamp{Counter: 2, Node: "A"})
-	m.Delete("dead-old", Timestamp{Counter: 3, Node: "A"})   // stable tombstone
+	m.Delete("dead-old", Timestamp{Counter: 3, Node: "A"})    // stable tombstone
 	m.Delete("dead-recent", Timestamp{Counter: 9, Node: "A"}) // above low-water
 	m.Set("live-recent", val("b"), Timestamp{Counter: 8, Node: "A"})
 
