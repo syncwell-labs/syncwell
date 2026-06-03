@@ -1,5 +1,9 @@
 # Syncwell
 
+<!-- After pushing to GitHub, replace OWNER/REPO to activate the badge. -->
+[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+&nbsp;![Go](https://img.shields.io/badge/Go-1.23-00ADD8) ![License](https://img.shields.io/badge/license-MIT-blue)
+
 **Add multiplayer — live cursors, presence, and conflict-free shared state — to any app with a few lines of code. Self-hostable, single binary, language-agnostic.**
 
 Syncwell is an open-source, self-hostable real-time collaboration engine — an alternative to closed SaaS like Liveblocks and PartyKit. Drop in the client SDK, point it at a Syncwell server, and your users get Google-Docs-style live sync. The server compiles to a single dependency-free binary you can run anywhere.
@@ -72,6 +76,13 @@ Or build the single binary:
 ```bash
 make build      # -> ./bin/syncwell
 ./bin/syncwell  # listens on :8080
+```
+
+Or run it in Docker (multi-stage build → distroless, ~10 MB image):
+
+```bash
+docker build -t syncwell .
+docker run -p 8080:8080 syncwell
 ```
 
 Use it from the browser:

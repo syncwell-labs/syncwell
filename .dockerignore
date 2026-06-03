@@ -1,0 +1,9 @@
+.git
+.github
+bin
+data
+*.log
+*.tmp
+node_modules
+docs/BENCHMARKS.md
+PLAN.md

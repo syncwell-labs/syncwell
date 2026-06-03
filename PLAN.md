@@ -123,12 +123,15 @@ shows real figures.
 - [x] Message-size cap (1 MiB) + per-room client cap (`-max-clients`).
 - [x] Graceful shutdown (drain connections, flush persistence) — Phase 2.2.
 
-### 3.2 Packaging & deploy  `[ ]`
-- [ ] Publish the client SDK as an npm package (`syncwell-client`).
-- [ ] Finalize Docker image; `docker run` one-liner in README.
-- [ ] Deploy a hosted live demo; put the URL in README. (Fly.io/Render/VPS —
-      single static binary makes this trivial.)
-- [ ] GitHub Actions: vet + `go test -race` + chaos + bench on push; badges.
+### 3.2 Packaging & deploy  `[~]` mostly done (publish/deploy need your accounts)
+- [x] Client SDK packaged as `syncwell-client` (package.json + sdk/README.md).
+      _`npm publish` requires your npm account — package is publish-ready._
+- [x] Docker image finalized (multi-stage, distroless, static binary) +
+      `.dockerignore`; `docker run` one-liner in README.
+- [ ] Deploy a hosted live demo; put the URL in README. _(Needs your hosting
+      account — single static binary makes Fly.io/Render/VPS trivial.)_
+- [x] GitHub Actions CI: `make all` + chaos + bench on push; badge in README.
+      _Activates once pushed to your GitHub repo._
 
 ### 3.3 Flagship demo  `[x]` DONE
 - [x] Collaborative **kanban board** (`demo/kanban.html`): drag cards between

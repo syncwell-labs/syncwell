@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Vet, unit + race tests, JS tests, e2e, persistence, GC, build
+        run: make all
+
+      - name: Adversarial convergence (chaos)
+        run: make chaos
+
+      - name: Benchmark smoke run
+        run: CLIENTS=20 DURATION_MS=1500 make bench
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: docs/BENCHMARKS.md
