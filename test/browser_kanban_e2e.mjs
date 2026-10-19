@@ -30,8 +30,22 @@ async function startGeckodriver() {
   proc.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
-  await sleep(800);
-  return { proc, stderr: () => stderr };
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null) {
+      throw new Error(`geckodriver exited early (${proc.exitCode}): ${stderr}`);
+    }
+    try {
+      const res = await fetch("http://127.0.0.1:4444/status", {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (res.ok) return { proc, stderr: () => stderr };
+    } catch {
+      // not listening yet
+    }
+    await sleep(100);
+  }
+  throw new Error(`geckodriver did not become ready in time: ${stderr}`);
 }
 
 async function withSession(fn) {

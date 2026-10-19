@@ -140,6 +140,14 @@ These block any honest "production" or "multi-node" claim.
 - `/stats`, `/metrics`, and `/cluster/event` rely solely on the bearer token
   (body capped at 1 MB). No brute-force or request-rate protection.
 
+### M-7 — Browser E2E is flaky (geckodriver startup race)
+- `test/browser_kanban_e2e.mjs` waited a fixed 800 ms for geckodriver and then
+  POSTed `/session`; a slower cold start fails the whole job with `fetch failed`.
+  This turned CI red on a **docs-only** commit (run `39302724795`).
+- Patched in the follow-up commit to poll `/status` (up to 15 s) instead of a
+  fixed sleep, but the lesson stands: the browser job's reliability depends on
+  the runner image and should not be the thing that decides "green".
+
 ---
 
 ## Low / accuracy
