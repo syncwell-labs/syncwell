@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pathToFileURL } from "node:url";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const firefoxBin = process.env.FIREFOX_BIN || "/usr/bin/firefox";
 const geckodriverBin = process.env.GECKODRIVER_BIN || "/usr/bin/geckodriver";
-const demoURL = pathToFileURL("/home/useer/E/Syncwell/demo/kanban.html").href + "?test=1";
+const demoURL = pathToFileURL(path.join(__dirname, "..", "demo", "kanban.html")).href + "?test=1";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
