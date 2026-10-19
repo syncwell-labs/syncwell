@@ -45,7 +45,9 @@ disconnected) and converge on reconnect; the server persists to disk, survives
   low-water mark (`make gc`)
 
 _Still ahead (see [docs/ROADMAP.md](docs/ROADMAP.md)): hosted demo URL, npm SDK,
-GitHub stars / Docker pulls / self-hosting users._
+GitHub stars / Docker pulls / self-hosting users. For the unfiltered list of what
+is **not** production-ready, read
+[docs/READINESS_AUDIT_2026-10-19.md](docs/READINESS_AUDIT_2026-10-19.md)._
 
 ## Quickstart
 
