@@ -6,7 +6,7 @@ demos, and the docs. This checklist is the owner-facing release path.
 ## 0. Pre-flight (must be true)
 
 - [ ] `make all` is green locally.
-- [ ] CI on `master` is green.
+- [ ] CI on `main` is green.
 - [ ] No secrets in the tree or history (`git log -p | grep -E 'gh[pous]_|PRIVATE KEY'`).
 - [ ] `docs/READINESS_AUDIT_2026-10-19.md` blockers that apply to the claim you
       are making are closed.

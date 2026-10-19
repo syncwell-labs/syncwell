@@ -22,7 +22,22 @@
 .claude/
 .agents/
 .codex/
+.opencode/
+
+# Node / npm
+node_modules/
+npm-debug.log*
+
+# Local secrets and keys (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
 
 # Test/coverage artifacts
 coverage.out
 *.cover
+
+# Store compaction temp files / scratch
+*.tmp
