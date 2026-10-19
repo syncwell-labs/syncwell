@@ -47,7 +47,9 @@ disconnected) and converge on reconnect; the server persists to disk, survives
 _Still ahead (see [docs/ROADMAP.md](docs/ROADMAP.md)): hosted demo URL, npm SDK,
 GitHub stars / Docker pulls / self-hosting users. For the unfiltered list of what
 is **not** production-ready, read
-[docs/READINESS_AUDIT_2026-10-19.md](docs/READINESS_AUDIT_2026-10-19.md)._
+[docs/READINESS_AUDIT_2026-10-19.md](docs/READINESS_AUDIT_2026-10-19.md); for the
+plan to close every gap, read
+[docs/COMPLETION_PLAN_2026-10-20.md](docs/COMPLETION_PLAN_2026-10-20.md)._
 
 ## Quickstart
 
