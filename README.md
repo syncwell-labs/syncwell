@@ -1,7 +1,8 @@
 # Syncwell
 
-<!-- After pushing to GitHub, replace OWNER/REPO to activate the badge. -->
+<!-- CI badge: add one after pushing, e.g.
 [![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+-->
 &nbsp;![Go](https://img.shields.io/badge/Go-1.23-00ADD8) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **Add multiplayer — live cursors, presence, and conflict-free shared state — to any app with a few lines of code. Self-hostable, single binary, language-agnostic.**
@@ -13,7 +14,7 @@ Syncwell is an open-source, self-hostable real-time collaboration engine — an 
 │ Client A │◀───────▶│  Syncwell server     │◀──────▶│ Client B │
 │ (browser)│         │  • CRDT per room     │        │ (browser)│
 └──────────┘         │  • presence relay    │        └──────────┘
-                     │  • single 8 MB binary│
+                     │  • single ~10.5 MB binary│
                      └─────────────────────┘
 ```
 
@@ -34,7 +35,7 @@ disconnected) and converge on reconnect; the server persists to disk, survives
 | sync latency p50 / p95 / p99 | **1.3 / 2.5 / 3.6 ms** |
 | delivery throughput | **~9,000 msg/s** |
 | server memory (RSS) | **11.5 MB** |
-| binary size | single **~8 MB** static binary, zero runtime deps |
+| binary size | single **~10.5 MB** static binary, zero runtime deps |
 
 **Proven correct** (all green in `make all`):
 - ⚡ CRDT laws — commutativity, associativity, idempotence (Go + JS suites)
@@ -63,12 +64,15 @@ go run ./cmd/syncwell
 syncwell \
   -data ./data \                 # persist to disk (survives restart)
   -secret "$SECRET" \            # require room tokens (HMAC, expiring)
+  -admin-token "$ADMIN_TOKEN" \   # protect /stats
   -origins https://app.example \ # Origin allow-list
-  -max-clients 200               # per-room cap
+  -max-clients 200 \             # per-room cap
+  -max-messages-per-second 120   # per-client rate limit
 
 # issue a 24h token for a room:
 syncwell -secret "$SECRET" -mint my-room
-# clients connect with ws://host/ws?room=my-room&token=<token>
+# clients connect with:
+# new Syncwell("wss://host/ws", "my-room", { token })
 ```
 
 Or build the single binary:
@@ -76,12 +80,13 @@ Or build the single binary:
 ```bash
 make build      # -> ./bin/syncwell
 ./bin/syncwell  # listens on :8080
+./bin/syncwell -version
 ```
 
 Or run it in Docker (multi-stage build → distroless, ~10 MB image):
 
 ```bash
-docker build -t syncwell .
+make docker VERSION=0.2.0
 docker run -p 8080:8080 syncwell
 ```
 
@@ -90,14 +95,23 @@ Use it from the browser:
 ```js
 import { Syncwell } from "./sdk/syncwell.js";
 
-const sw = new Syncwell("ws://localhost:8080/ws", "my-room");
-sw.on("snapshot", ({ state }) => render(state));
-sw.on("op", ({ key, register }) => applyChange(key, register));
+const sw = new Syncwell("ws://localhost:8080/ws", "my-room", {
+  token,              // optional when the server runs with -secret
+  clientId: userId,   // keep stable if you enable persistence
+  persist: true,      // stores offline edits in localStorage
+});
+sw.on("change", (live) => render(live));
+sw.on("error", (err) => console.error(err.code, err.message));
 sw.connect();
 
 sw.set("title", "Hello, multiplayer");   // syncs to everyone in "my-room"
 sw.presence({ cursor: { x: 12, y: 40 } }); // ephemeral, not persisted
 ```
+
+For hosted deployments, put Syncwell behind TLS, configure `-origins`, require
+room tokens with `-secret`, protect `/stats` with `-admin-token`, use
+`/healthz` and `/readyz` for probes, and back up the `-data` directory. See
+[docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## How it works
 

@@ -96,6 +96,40 @@ func TestMergeCommutative(t *testing.T) {
 	}
 }
 
+// Equal timestamps must still converge. Timestamps are client-authored, so a
+// buggy or malicious client can reuse one with a different value.
+func TestMergeCommutativeWithConflictingEqualTimestamp(t *testing.T) {
+	ts := Timestamp{Counter: 9, Node: "same-client"}
+	a := NewLWWMap()
+	a.Set("k", val("alpha"), ts)
+	b := NewLWWMap()
+	b.Set("k", val("bravo"), ts)
+
+	ab := clone(a)
+	ab.Merge(b)
+	ba := clone(b)
+	ba.Merge(a)
+
+	if !reflect.DeepEqual(ab.Snapshot(), ba.Snapshot()) {
+		t.Fatalf("equal-timestamp registers diverged: ab=%v ba=%v", ab.Snapshot(), ba.Snapshot())
+	}
+	if got := mustGet(t, ab, "k"); got != "bravo" {
+		t.Fatalf("deterministic tie-break chose %q, want bravo", got)
+	}
+}
+
+func TestDeleteWinsEqualTimestampTie(t *testing.T) {
+	ts := Timestamp{Counter: 9, Node: "same-client"}
+	a := NewLWWMap()
+	a.Set("k", val("value"), ts)
+	b := NewLWWMap()
+	b.Delete("k", ts)
+	a.Merge(b)
+	if _, ok := a.Get("k"); ok {
+		t.Fatal("delete must deterministically win an equal-timestamp tie")
+	}
+}
+
 // TestMergeAssociative: (a∨b)∨c == a∨(b∨c).
 func TestMergeAssociative(t *testing.T) {
 	a := NewLWWMap()

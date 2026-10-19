@@ -7,17 +7,37 @@ GET /ws?room=<ROOM_ID>[&token=<TOKEN>]   (ROOM_ID defaults to "default")
 ```
 
 All frames are **JSON text** messages. The protocol is intentionally tiny.
+Frames may include `"protocol": 1`; clients and servers reject unsupported
+non-zero protocol versions.
+
+Default server limits reject pathological input before it reaches room state
+(each can be tuned with the matching `-max-*` flag):
+room IDs are capped at 256 bytes, keys and node IDs at 512 and 256 bytes,
+register values at 256 KiB, presence payloads at 64 KiB, merge states at 10,000
+entries, raw WebSocket messages at 1 MiB, and each client connection at 120
+messages per second.
 
 **Auth (optional).** If the server was started with a `-secret`, the connection
-must carry a valid room `token` (`"<exp>.<hmac-sha256(secret, "room|exp")>"`),
-or the upgrade is rejected with `401`. A non-allow-listed `Origin` is rejected
-with `403`. With no secret configured, the endpoint is open (dev mode).
+must carry a valid room `token`. The server accepts the legacy
+`<exp>.<hmac-sha256(secret, "room|exp")>` form, the older
+`<exp>.<caps>.<jti>.<hmac-sha256(...)>` form, and the current versioned
+principal-aware `v2.<base64url(JSON claims)>.<hmac-sha256(secret, "room|v2|payload")>`
+format. Tokens can carry `read`, `write`, `presence`, and `admin`
+capabilities; the `admin` capability is used for privileged endpoints such as
+`/stats` and `/metrics`. A non-allow-listed `Origin` is rejected with `403`.
+With no secret configured, the endpoint is open (dev mode).
 
 As of Phase 2 the **client authors the timestamp** (each client holds its own
 CRDT replica and Lamport clock). The server is a merge-and-fan-out relay, not a
 sequencer. This is what makes offline editing possible.
 
 A **register** is `{ "v": <value>, "t": { "c": <counter>, "n": <node> }, "d"?: true }`.
+
+Registers are ordered first by timestamp `(c,n)`. If a malformed or buggy
+client produces different registers with the same timestamp, the implementations
+use a deterministic content tie-break (with a tombstone preferred over a live
+value). This preserves convergence; well-behaved clients must still never reuse
+a timestamp for a different write.
 
 ---
 
@@ -29,6 +49,9 @@ A **register** is `{ "v": <value>, "t": { "c": <counter>, "n": <node> }, "d"?: t
 ```
 A delete is the same frame with a tombstone register: `{ "t": {...}, "d": true }`.
 The server merges the register into the room CRDT and broadcasts the winner.
+When persistence is enabled, a winning write is broadcast only after the append
+succeeds; on append failure the server returns an `error` frame instead of
+acknowledging an undurable change.
 
 ### `merge` — full client state, sent on (re)connect
 ```json
@@ -87,6 +110,13 @@ A tombstone op carries `"register": { "t": {...}, "d": true }`.
 { "type": "leave", "clientId": "c4" }
 ```
 
+### `error` — operation or connection rejected
+```json
+{ "type": "error", "data": "persistence failed" }
+```
+The server may send this before closing an over-capacity room connection or when
+a winning write could not be persisted.
+
 ---
 
 ## Idempotency & ordering guarantees
@@ -100,4 +130,11 @@ A tombstone op carries `"register": { "t": {...}, "d": true }`.
 ## HTTP endpoints
 
 - `GET /healthz` → `ok`
+- `GET /readyz` → `ok` while the hub accepts realtime traffic; `503` during
+  shutdown
 - `GET /stats` → JSON map of `room → { clients, live, tombstones, lowWater }`
+  (`Authorization: Bearer <admin-token>` is required when
+  `-admin-token` / `SYNCWELL_ADMIN_TOKEN` is configured; a Bearer token with
+  `admin` capability also works when the room secret is enabled)
+- `GET /metrics` → Prometheus-style snapshot of the same operational counters
+  with the same admin-capability or admin-token protection

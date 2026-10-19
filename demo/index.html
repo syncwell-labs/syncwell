@@ -5,33 +5,125 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Syncwell — live multiplayer demo</title>
     <style>
-      :root { color-scheme: light dark; }
-      body { font: 15px/1.5 system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
-      h1 { margin-bottom: 4px; }
-      .sub { color: #888; margin-top: 0; }
-      #status { font-size: 13px; padding: 2px 8px; border-radius: 6px; background: #eee; color: #555; }
-      #status.live { background: #d8f5dd; color: #137333; }
-      textarea { width: 100%; height: 160px; font: 15px/1.5 ui-monospace, monospace; padding: 10px; box-sizing: border-box; }
-      label { font-weight: 600; display: block; margin: 18px 0 6px; }
-      input[type=text] { width: 100%; padding: 8px; box-sizing: border-box; font-size: 15px; }
-      #peers { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-      .peer { width: 14px; height: 14px; border-radius: 50%; }
-      .hint { color: #888; font-size: 13px; }
+      :root {
+        color-scheme: light dark;
+        --bg: #f5f7fb;
+        --panel: #ffffff;
+        --panel-muted: #eef1f7;
+        --text: #132033;
+        --muted: #5f6b82;
+        --accent: #2f6bff;
+        --accent-soft: rgba(47, 107, 255, 0.12);
+        --border: rgba(19, 32, 51, 0.14);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0e1422;
+          --panel: #171f31;
+          --panel-muted: #202a40;
+          --text: #e7edf8;
+          --muted: #9aa7c2;
+          --accent: #7aa2ff;
+          --accent-soft: rgba(122, 162, 255, 0.16);
+          --border: rgba(231, 237, 248, 0.12);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 15px/1.5 system-ui, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(47, 107, 255, 0.14), transparent 32%),
+          radial-gradient(circle at top right, rgba(92, 161, 255, 0.1), transparent 30%),
+          var(--bg);
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 40px 16px 32px;
+      }
+      .shell {
+        background: color-mix(in srgb, var(--panel) 94%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
+      }
+      h1 { margin: 0 0 6px; font-size: clamp(28px, 4vw, 40px); line-height: 1.1; }
+      .sub { color: var(--muted); margin: 0 0 18px; }
+      #status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--panel-muted);
+        color: var(--muted);
+      }
+      #status::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      #status.live {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      textarea, input[type=text] {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--panel);
+        color: inherit;
+        font: inherit;
+        outline: none;
+      }
+      textarea {
+        min-height: 180px;
+        padding: 12px;
+        resize: vertical;
+        font: 15px/1.6 ui-monospace, monospace;
+      }
+      input[type=text] { padding: 10px 12px; font-size: 15px; }
+      textarea:focus-visible, input[type=text]:focus-visible {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 4px var(--accent-soft);
+      }
+      label { font-weight: 650; display: block; margin: 18px 0 8px; }
+      #peers { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+      .peer {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid var(--panel);
+        box-shadow: 0 0 0 1px var(--border);
+      }
+      .hint { color: var(--muted); font-size: 13px; margin-top: 14px; }
+      a { color: var(--accent); }
     </style>
   </head>
   <body>
-    <h1>Syncwell</h1>
-    <p class="sub">Open this page in two windows — edits sync live, and reconnect after going offline. <span id="status">connecting…</span></p>
+    <main>
+      <section class="shell" aria-labelledby="app-title">
+        <h1 id="app-title">Syncwell</h1>
+        <p class="sub">Open this page in two windows and watch the edits converge live. <span id="status" role="status" aria-live="polite">connecting…</span></p>
 
-    <label for="title">Shared title</label>
-    <input id="title" type="text" placeholder="Type a title…" />
+        <label for="title">Shared title</label>
+        <input id="title" type="text" placeholder="Type a title…" autocomplete="off" />
 
-    <label for="doc">Shared notes</label>
-    <textarea id="doc" placeholder="Type here — every keystroke syncs to all peers…"></textarea>
+        <label for="doc">Shared notes</label>
+        <textarea id="doc" placeholder="Type here — every keystroke syncs to all peers…" aria-label="Shared notes"></textarea>
 
-    <label>Live peers</label>
-    <div id="peers"></div>
-    <p class="hint">Each dot is another connected client. Try killing the server and restarting it — the page reconnects and re-syncs automatically. &nbsp;<a href="/kanban.html">See the collaborative kanban demo →</a></p>
+        <label id="peers-label">Live peers</label>
+        <div id="peers" aria-labelledby="peers-label"></div>
+        <p class="hint">Each dot is another connected client. Try killing the server and restarting it — the page reconnects and re-syncs automatically. &nbsp;<a href="/kanban.html">See the collaborative kanban demo →</a> &nbsp;|&nbsp; <a href="/sequence.html">Try the sequence scratchpad →</a></p>
+      </section>
+    </main>
 
     <script type="module">
       import { Syncwell } from "/sdk/syncwell.js";
@@ -45,7 +137,15 @@
       const myHue = Math.floor(Math.random() * 360);
       const peers = new Map(); // clientId -> hue
 
-      const sw = new Syncwell(`ws://${location.host}/ws`, "demo");
+      const clientIdKey = "syncwell-demo-client-id";
+      const fallbackId = () => `demo-${Math.floor(Math.random() * 1e9).toString(36)}`;
+      const savedClientId = localStorage.getItem(clientIdKey) || (crypto.randomUUID?.() ?? fallbackId());
+      localStorage.setItem(clientIdKey, savedClientId);
+
+      const sw = new Syncwell(`ws://${location.host}/ws`, "demo", {
+        clientId: savedClientId,
+        persist: true,
+      });
 
       function renderPeers() {
         peersEl.innerHTML = "";

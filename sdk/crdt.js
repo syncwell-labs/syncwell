@@ -10,6 +10,44 @@ export function tsAfter(a, b) {
   return a.n > b.n;
 }
 
+// stableJSON mirrors the server's deterministic tie-break for two registers
+// with the same timestamp. JSON object key order is not semantically relevant,
+// so sort keys before comparing. This follows RFC 8785 (JCS): UTF-16 key
+// ordering, ECMAScript number formatting, and minimal string escaping — the Go
+// implementation in internal/crdt is kept byte-compatible via shared fixtures.
+export function stableJSON(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJSON(item) ?? "null").join(",")}]`;
+  }
+  return `{${Object.keys(value).sort().flatMap((key) => {
+    const encoded = stableJSON(value[key]);
+    return encoded === undefined ? [] : [`${JSON.stringify(key)}:${encoded}`];
+  }).join(",")}}`;
+}
+
+// compareCodePoints orders strings by Unicode code point, which matches Go's
+// byte-wise comparison of valid UTF-8. JS's native `<` compares UTF-16 code
+// units, so astral-plane characters would otherwise order differently.
+function compareCodePoints(a, b) {
+  const ia = a[Symbol.iterator]();
+  const ib = b[Symbol.iterator]();
+  for (;;) {
+    const ca = ia.next();
+    const cb = ib.next();
+    if (ca.done || cb.done) return ca.done ? (cb.done ? 0 : -1) : 1;
+    const pa = ca.value.codePointAt(0);
+    const pb = cb.value.codePointAt(0);
+    if (pa !== pb) return pa < pb ? -1 : 1;
+  }
+}
+
+function registerAfter(a, b) {
+  if (a.t.c !== b.t.c || a.t.n !== b.t.n) return tsAfter(a.t, b.t);
+  if (Boolean(a.d) !== Boolean(b.d)) return Boolean(a.d);
+  return compareCodePoints(stableJSON(a.v) ?? "", stableJSON(b.v) ?? "") > 0;
+}
+
 // Clock is a per-replica Lamport clock.
 export class Clock {
   constructor(node) {
@@ -35,7 +73,7 @@ export class LWWMap {
 
   _apply(key, reg) {
     const cur = this.entries.get(key);
-    if (!cur || tsAfter(reg.t, cur.t)) this.entries.set(key, reg);
+    if (!cur || registerAfter(reg, cur)) this.entries.set(key, reg);
   }
 
   set(key, value, ts) {

@@ -1,0 +1,103 @@
+[
+  {
+    "name": "number lexeme normalization",
+    "a": { "v": "1.0", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "1", "t": { "c": 1, "n": "x" } },
+    "canonA": "1",
+    "canonB": "1",
+    "want": 1
+  },
+  {
+    "name": "negative zero normalizes",
+    "a": { "v": "-0", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "0", "t": { "c": 1, "n": "x" } },
+    "canonA": "0",
+    "canonB": "0",
+    "want": 0
+  },
+  {
+    "name": "small exponent formatting",
+    "a": { "v": "1e-7", "t": { "c": 1, "n": "x" } },
+    "canonA": "1e-7"
+  },
+  {
+    "name": "small decimal formatting",
+    "a": { "v": "0.000001", "t": { "c": 1, "n": "x" } },
+    "canonA": "0.000001"
+  },
+  {
+    "name": "large exponent formatting",
+    "a": { "v": "1e21", "t": { "c": 1, "n": "x" } },
+    "canonA": "1e+21"
+  },
+  {
+    "name": "html characters are not escaped",
+    "a": { "v": "\"<z\"", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "\"M\"", "t": { "c": 1, "n": "x" } },
+    "canonA": "\"<z\"",
+    "canonB": "\"M\"",
+    "want": "M"
+  },
+  {
+    "name": "line/paragraph separators are not escaped",
+    "a": { "v": "\"\\u2028\\u2029\"", "t": { "c": 1, "n": "x" } },
+    "canonA": "\"\u2028\u2029\""
+  },
+  {
+    "name": "object key order is canonical",
+    "a": { "v": "{\"b\":1,\"a\":2}", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "{\"a\":2,\"b\":1}", "t": { "c": 1, "n": "x" } },
+    "canonA": "{\"a\":2,\"b\":1}",
+    "canonB": "{\"a\":2,\"b\":1}",
+    "want": { "a": 2, "b": 1 }
+  },
+  {
+    "name": "astral keys sort by UTF-16 code units",
+    "a": { "v": "{\"\\ud83d\\ude00\":1,\"\\ufffd\":2}", "t": { "c": 1, "n": "x" } },
+    "canonA": "{\"\ud83d\ude00\":1,\"\ufffd\":2}"
+  },
+  {
+    "name": "number vs string ordering",
+    "a": { "v": "10", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "\"10\"", "t": { "c": 1, "n": "x" } },
+    "canonA": "10",
+    "canonB": "\"10\"",
+    "want": 10
+  },
+  {
+    "name": "nested array ordering",
+    "a": { "v": "{\"x\":[1,2]}", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "{\"x\":[1,3]}", "t": { "c": 1, "n": "x" } },
+    "canonA": "{\"x\":[1,2]}",
+    "canonB": "{\"x\":[1,3]}",
+    "want": { "x": [1, 3] }
+  },
+  {
+    "name": "boolean ordering",
+    "a": { "v": "true", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "false", "t": { "c": 1, "n": "x" } },
+    "canonA": "true",
+    "canonB": "false",
+    "want": true
+  },
+  {
+    "name": "unicode key ordering",
+    "a": { "v": "{\"é\":1,\"z\":2}", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "{\"z\":2,\"é\":1}", "t": { "c": 1, "n": "x" } },
+    "canonA": "{\"z\":2,\"é\":1}",
+    "canonB": "{\"z\":2,\"é\":1}",
+    "want": { "z": 2, "é": 1 }
+  },
+  {
+    "name": "counter dominates content",
+    "a": { "v": "\"x\"", "t": { "c": 1, "n": "x" } },
+    "b": { "v": "\"y\"", "t": { "c": 2, "n": "x" } },
+    "want": "y"
+  },
+  {
+    "name": "node breaks counter ties",
+    "a": { "v": "\"x\"", "t": { "c": 1, "n": "a" } },
+    "b": { "v": "\"y\"", "t": { "c": 1, "n": "b" } },
+    "want": "y"
+  }
+]

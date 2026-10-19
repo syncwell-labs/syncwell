@@ -10,6 +10,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Syncwell } from "../sdk/syncwell.js";
+import { waitHealthy } from "./helpers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, "..", "bin", "syncwell");
@@ -19,16 +20,6 @@ const BASE = `ws://localhost:${PORT}/ws`;
 const K = Number(process.env.CLIENTS || 50);
 const DURATION_MS = Number(process.env.DURATION_MS || 3000);
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 5);
-
-async function waitHealthy() {
-  for (let i = 0; i < 50; i++) {
-    try {
-      if ((await fetch(`http://localhost:${PORT}/healthz`)).ok) return;
-    } catch {}
-    await sleep(100);
-  }
-  throw new Error("server did not become healthy");
-}
 
 function percentile(sorted, p) {
   if (!sorted.length) return NaN;
@@ -49,7 +40,7 @@ async function serverRSSkb(pid) {
 async function main() {
   const srv = spawn(BIN, ["-addr", `:${PORT}`], { stdio: "ignore" });
   try {
-    await waitHealthy();
+    await waitHealthy(PORT);
 
     // Connect K clients to one room.
     const clients = [];

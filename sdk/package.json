@@ -6,11 +6,12 @@
   "main": "syncwell.js",
   "exports": {
     ".": "./syncwell.js",
-    "./crdt": "./crdt.js"
+    "./crdt": "./crdt.js",
+    "./sequence": "./sequence.js"
   },
   "scripts": {
     "test": "node --test"
   },
   "license": "MIT",
-  "files": ["syncwell.js", "crdt.js"]
+  "files": ["syncwell.js", "crdt.js", "sequence.js"]
 }

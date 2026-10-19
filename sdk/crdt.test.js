@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LWWMap, Clock, tsAfter } from "./crdt.js";
+import { SequenceDoc } from "./sequence.js";
 
 const ts = (c, n) => ({ c, n });
 
@@ -61,6 +62,24 @@ test("merge is commutative", () => {
   assert.equal(ab.get("k"), "a-wins");
 });
 
+test("equal timestamp conflicts use a deterministic content tie-break", () => {
+  const a = new LWWMap(); a.set("k", "alpha", ts(9, "same-client"));
+  const b = new LWWMap(); b.set("k", "bravo", ts(9, "same-client"));
+
+  const ab = clone(a); ab.mergeState(b.snapshot());
+  const ba = clone(b); ba.mergeState(a.snapshot());
+
+  snapEqual(ab, ba);
+  assert.equal(ab.get("k"), "bravo");
+});
+
+test("equal timestamp delete deterministically wins over a value", () => {
+  const a = new LWWMap(); a.set("k", "value", ts(9, "same-client"));
+  const b = new LWWMap(); b.delete("k", ts(9, "same-client"));
+  a.mergeState(b.snapshot());
+  assert.equal(a.get("k"), undefined);
+});
+
 test("merge is associative", () => {
   const a = new LWWMap(); a.set("k", "a", ts(1, "A"));
   const b = new LWWMap(); b.set("k", "b", ts(2, "B"));
@@ -101,4 +120,34 @@ test("tsAfter ordering: counter then node", () => {
   assert.equal(tsAfter(ts(2, "A"), ts(1, "Z")), true);
   assert.equal(tsAfter(ts(1, "B"), ts(1, "A")), true);
   assert.equal(tsAfter(ts(1, "A"), ts(1, "B")), false);
+});
+
+test("sequence CRDT merges deterministically across replicas", () => {
+  const a = new SequenceDoc();
+  a.insert("a1", "", "H");
+  a.insert("a2", "a1", "i");
+
+  const b = new SequenceDoc();
+  b.insert("b1", "", "!");
+  b.insert("b2", "b1", " ");
+
+  const ab = new SequenceDoc();
+  ab.merge(a.snapshot());
+  ab.merge(b.snapshot());
+
+  const ba = new SequenceDoc();
+  ba.merge(b.snapshot());
+  ba.merge(a.snapshot());
+
+  assert.equal(ab.text(), ba.text());
+  assert.equal(ab.text(), "Hi! ");
+  assert.deepEqual(ab.visibleIds(), ["a1", "a2", "b1", "b2"]);
+});
+
+test("sequence CRDT tombstones hide deleted nodes", () => {
+  const doc = new SequenceDoc();
+  doc.insert("root", "", "x");
+  doc.delete("root");
+  assert.equal(doc.text(), "");
+  assert.deepEqual(doc.visibleIds(), []);
 });

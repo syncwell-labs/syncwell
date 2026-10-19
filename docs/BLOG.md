@@ -7,7 +7,7 @@ that just works when two people edit at once. The good hosted options
 (Liveblocks, PartyKit) are closed and per-seat priced. I wanted to understand the
 hard parts myself and end up with something I could self-host, so I built
 **Syncwell** — an MIT-licensed collaboration engine that compiles to a single
-~8 MB binary.
+~10.5 MB binary.
 
 This post is about the three problems that actually make real-time
 collaboration hard, and the design decisions behind each.

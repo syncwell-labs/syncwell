@@ -9,22 +9,12 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Syncwell } from "../sdk/syncwell.js";
+import { waitHealthy } from "./helpers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, "..", "bin", "syncwell");
 const PORT = 8123;
 const BASE = `ws://localhost:${PORT}/ws`;
-
-async function waitHealthy() {
-  for (let i = 0; i < 50; i++) {
-    try {
-      const r = await fetch(`http://localhost:${PORT}/healthz`);
-      if (r.ok) return;
-    } catch {}
-    await sleep(100);
-  }
-  throw new Error("server did not become healthy");
-}
 
 function newClient(id) {
   return new Syncwell(BASE, "e2e", { clientId: id });
@@ -34,7 +24,7 @@ async function main() {
   const srv = spawn(BIN, ["-addr", `:${PORT}`], { stdio: "ignore" });
   let failed = null;
   try {
-    await waitHealthy();
+    await waitHealthy(PORT);
 
     const a = newClient("A");
     const b = newClient("B");

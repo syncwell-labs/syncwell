@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell — sequence scratchpad</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f5f7fb;
+        --panel: #ffffff;
+        --panel-muted: #eef1f7;
+        --text: #132033;
+        --muted: #5f6b82;
+        --accent: #2f6bff;
+        --accent-soft: rgba(47, 107, 255, 0.12);
+        --border: rgba(19, 32, 51, 0.14);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0e1422;
+          --panel: #171f31;
+          --panel-muted: #202a40;
+          --text: #e7edf8;
+          --muted: #9aa7c2;
+          --accent: #7aa2ff;
+          --accent-soft: rgba(122, 162, 255, 0.16);
+          --border: rgba(231, 237, 248, 0.12);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 15px/1.5 system-ui, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(47, 107, 255, 0.14), transparent 32%),
+          radial-gradient(circle at top right, rgba(92, 161, 255, 0.1), transparent 30%),
+          var(--bg);
+      }
+      main {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 40px 16px 32px;
+      }
+      .shell {
+        background: color-mix(in srgb, var(--panel) 94%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
+      }
+      h1 { margin: 0 0 6px; font-size: clamp(28px, 4vw, 40px); line-height: 1.1; }
+      .sub { color: var(--muted); margin: 0 0 18px; }
+      #status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--panel-muted);
+        color: var(--muted);
+      }
+      #status::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      #status.live {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      textarea, input[type=text] {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--panel);
+        color: inherit;
+        font: inherit;
+        outline: none;
+      }
+      textarea {
+        min-height: 280px;
+        padding: 12px;
+        resize: vertical;
+        font: 15px/1.6 ui-monospace, monospace;
+      }
+      textarea:focus-visible, input[type=text]:focus-visible {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 4px var(--accent-soft);
+      }
+      label { font-weight: 650; display: block; margin: 18px 0 8px; }
+      .hint { color: var(--muted); font-size: 13px; margin-top: 14px; }
+      a { color: var(--accent); }
+      code {
+        padding: 0.1em 0.3em;
+        border-radius: 6px;
+        background: var(--panel-muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="shell" aria-labelledby="app-title">
+        <h1 id="app-title">Sequence scratchpad</h1>
+        <p class="sub">
+          A small character-level CRDT prototype. Open this page in two tabs and
+          type at the end of the scratchpad to watch the sequence merge live.
+          <span id="status" role="status" aria-live="polite">starting…</span>
+        </p>
+
+        <label for="doc">Shared scratchpad</label>
+        <textarea id="doc" placeholder="Type here — append and backspace at the end to collaborate…"></textarea>
+
+        <p class="hint">
+          This prototype uses the new sequence CRDT foundation rather than the
+          room's LWW map. It is intentionally simple: typing at the end and
+          deleting from the end are the supported interactions. <a href="/">Back to the main demo →</a>
+        </p>
+      </section>
+    </main>
+
+    <script type="module">
+      import { SequenceDoc } from "/sdk/sequence.js";
+
+      const statusEl = document.getElementById("status");
+      const docEl = document.getElementById("doc");
+      const channelName = "syncwell-sequence-scratchpad";
+      const storageKey = "syncwell:sequence:scratchpad";
+      const clientId = localStorage.getItem("syncwell-sequence-client-id") || (crypto.randomUUID?.() ?? `seq-${Math.floor(Math.random() * 1e9).toString(36)}`);
+      localStorage.setItem("syncwell-sequence-client-id", clientId);
+      const channel = "BroadcastChannel" in window ? new BroadcastChannel(channelName) : null;
+      const doc = new SequenceDoc();
+      let counter = 0;
+      let syncing = false;
+
+      function tailId() {
+        const ids = doc.visibleIds();
+        return ids.length ? ids[ids.length - 1] : "";
+      }
+
+      function loadSnapshot() {
+        try {
+          const raw = localStorage.getItem(storageKey);
+          if (!raw) return;
+          doc.merge(JSON.parse(raw));
+        } catch {
+          // Ignore stale/corrupt local state in this prototype.
+        }
+      }
+
+      function saveSnapshot() {
+        localStorage.setItem(storageKey, JSON.stringify(doc.snapshot()));
+      }
+
+      function broadcast() {
+        const snap = doc.snapshot();
+        saveSnapshot();
+        channel?.postMessage({ type: "snapshot", from: clientId, state: snap });
+      }
+
+      function render() {
+        const value = doc.text();
+        if (document.activeElement !== docEl) docEl.value = value;
+      }
+
+      function syncFromText(next) {
+        const cur = doc.text();
+        if (next === cur) return;
+        let prefix = 0;
+        while (prefix < cur.length && prefix < next.length && cur[prefix] === next[prefix]) prefix++;
+
+        const remove = cur.length - prefix;
+        if (remove > 0) {
+          const ids = doc.visibleIds();
+          for (let i = 0; i < remove; i++) {
+            const id = ids[ids.length - 1 - i];
+            if (id) doc.delete(id);
+          }
+        }
+
+        let after = tailId();
+        for (const ch of next.slice(prefix)) {
+          const id = `${clientId}:${++counter}`;
+          doc.insert(id, after, ch);
+          after = id;
+        }
+        broadcast();
+        render();
+      }
+
+      loadSnapshot();
+      render();
+      statusEl.textContent = "local prototype";
+      statusEl.className = "live";
+
+      docEl.addEventListener("input", () => {
+        if (syncing) return;
+        syncFromText(docEl.value);
+      });
+
+      channel?.addEventListener("message", (event) => {
+        const msg = event.data;
+        if (!msg || msg.from === clientId || msg.type !== "snapshot") return;
+        syncing = true;
+        try {
+          doc.merge(msg.state || {});
+          saveSnapshot();
+          render();
+        } finally {
+          syncing = false;
+        }
+      });
+
+      window.addEventListener("beforeunload", () => {
+        try {
+          channel?.close();
+        } catch {}
+      });
+    </script>
+  </body>
+</html>

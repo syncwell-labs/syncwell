@@ -36,10 +36,13 @@ Syncwell is done when ALL of the following are true:
 When 1–8 hold, the project is launch-ready (Show HN / r/programming) and the
 remaining work is *distribution*, not engineering.
 
-### Status (current): engineering complete ✅
+### Status (current): engineering scope complete — verified locally
 
-All eight criteria are met and verified by `make all` + `make chaos` + `make
-bench`. The only remaining items are **owner-account actions**, not code:
+As of 2026-10-19, `make all` (fmt-check, vet, race tests, JS tests, offline /
+persist / GC / multi-client E2E, chaos, build) passes locally. The CI workflow
+targets both `main` and `master`, but its badge only turns green once the repo
+is pushed and the workflow has actually run. The remaining items are
+**owner-account actions**, not code:
 
 1. ✅ Offline-capable — `make e2e`
 2. ✅ Durable across restart — `make persist`
@@ -48,11 +51,12 @@ bench`. The only remaining items are **owner-account actions**, not code:
 5. ✅ Measured (p50 1.3 / p99 3.6 ms, ~9k msg/s, 11.5 MB @ 50 clients) — `make bench`
 6. ✅ Usable by others — SDK packaged, auth, Docker one-liner
 7. ✅ Demoable — kanban + text demos
-8. ✅ Documented & CI'd — README/DESIGN/PROTOCOL/BLOG/CONTRIBUTING + GitHub Actions
+8. ✅ Documented & CI'd — README/DESIGN/PROTOCOL/BLOG/CONTRIBUTING + GitHub Actions (`main`/`master`; badge activates on first push)
 
-**Left to you (needs your accounts):** push to GitHub (activates CI badge),
+**Left to you (needs your accounts):** push to GitHub (activates the CI badge),
 `npm publish` the SDK, deploy the hosted demo, record a partition-recovery GIF,
-then launch and track stars/pulls/users.
+then launch and track stars/pulls/users. See
+`docs/PROJECT_SCAN_ISSUES_2026-10-19.md` for the audit and its resolution log.
 
 ---
 
@@ -166,8 +170,14 @@ shows real figures.
 ---
 
 ## Stretch (only if the above is fully done)
-- [ ] Horizontal scaling: shard rooms across nodes via a pub/sub backbone.
-- [ ] Sequence CRDT (RGA/Yjs-style) for character-level collaborative text.
+- [~] Horizontal scaling: shard rooms across nodes via a pub/sub backbone.
+      A rendezvous shard planner, room-owner metadata, and an in-process
+      cluster bus plus JSON wire codec now exist in `internal/server/shard.go`,
+      `internal/server/hub.go`, and `internal/server/bus.go`, but the real
+      networked cross-node transport is still future work.
+- [~] Sequence CRDT (RGA/Yjs-style) foundation landed in `internal/sequence`
+      and `sdk/sequence.js`; integration into the main demos remains future
+      work.
 
 ---
 

@@ -9,21 +9,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Syncwell } from "../sdk/syncwell.js";
+import { waitHealthy } from "./helpers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, "..", "bin", "syncwell");
-const PORT = 8124;
+const PORT = 8127;
 const BASE = `ws://localhost:${PORT}/ws`;
-
-async function waitHealthy() {
-  for (let i = 0; i < 50; i++) {
-    try {
-      if ((await fetch(`http://localhost:${PORT}/healthz`)).ok) return;
-    } catch {}
-    await sleep(100);
-  }
-  throw new Error("server did not become healthy");
-}
 
 function startServer(dataDir) {
   return spawn(BIN, ["-addr", `:${PORT}`, "-data", dataDir], { stdio: "ignore" });
@@ -34,7 +25,7 @@ async function main() {
   let failed = null;
   let srv = startServer(dataDir);
   try {
-    await waitHealthy();
+    await waitHealthy(PORT);
 
     // 1) Write some state and let it flush to disk.
     const a = new Syncwell(BASE, "persist", { clientId: "A" });
@@ -52,7 +43,7 @@ async function main() {
 
     // 3) Restart against the same data dir.
     srv = startServer(dataDir);
-    await waitHealthy();
+    await waitHealthy(PORT);
 
     // 4) A fresh client must receive the persisted document in its snapshot.
     const b = new Syncwell(BASE, "persist", { clientId: "B" });

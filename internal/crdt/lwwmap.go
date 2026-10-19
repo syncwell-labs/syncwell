@@ -6,8 +6,14 @@
 package crdt
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"sort"
+	"strconv"
+	"strings"
+	"unicode/utf16"
 )
 
 // Register is a single LWW value cell: the value, the timestamp of the write
@@ -20,13 +26,225 @@ type Register struct {
 }
 
 // merge returns the winning register between two views of the same key.
-// Higher timestamp wins; equal timestamps imply the same (counter,node) and
-// therefore the same write, so either side is correct.
+// Timestamp is the primary order. A deterministic register-content order is
+// used when timestamps tie: clients can be buggy or malicious and submit two
+// different values for the same (counter,node), and keeping whichever replica
+// happened to see first would violate CRDT commutativity.
 func (r Register) merge(other Register) Register {
-	if other.TS.After(r.TS) {
+	if other.after(r) {
 		return other
 	}
 	return r
+}
+
+func (r Register) after(other Register) bool {
+	if r.TS != other.TS {
+		return r.TS.After(other.TS)
+	}
+	// A delete wins an otherwise identical-timestamp write. This is a
+	// deterministic safety preference; a higher timestamp can still recreate
+	// the key normally.
+	if r.Deleted != other.Deleted {
+		return r.Deleted
+	}
+	if cmp := bytes.Compare(canonicalJSON(r.Value), canonicalJSON(other.Value)); cmp != 0 {
+		return cmp > 0
+	}
+	return bytes.Compare(r.Value, other.Value) > 0
+}
+
+// Equal reports byte-identical register equality.
+func (r Register) Equal(other Register) bool {
+	return r.TS == other.TS && r.Deleted == other.Deleted && bytes.Equal(r.Value, other.Value)
+}
+
+// ResolveRegister returns the CRDT winner between two registers.
+func ResolveRegister(current, candidate Register) Register {
+	return current.merge(candidate)
+}
+
+// canonicalJSON gives semantically equivalent JSON values one deterministic
+// representation before they are used as a timestamp tie-breaker. RawMessage
+// values arrive from JSON frames, but retaining a byte fallback keeps the CRDT
+// total even for values supplied directly by an embedding application.
+//
+// The encoding follows RFC 8785 (JCS) so the client SDK's stableJSON produces
+// the same bytes for the same value:
+//   - numbers are IEEE-754 doubles serialized with ECMAScript's algorithm;
+//   - object keys are sorted by UTF-16 code units;
+//   - strings use minimal escaping (no HTML or U+2028/29 escaping);
+//   - no insignificant whitespace.
+func canonicalJSON(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return raw
+	}
+	if err := requireEOF(dec); err != nil {
+		return raw
+	}
+	var buf bytes.Buffer
+	if err := writeCanonical(&buf, value); err != nil {
+		return raw
+	}
+	return buf.Bytes()
+}
+
+func writeCanonical(buf *bytes.Buffer, value any) error {
+	switch v := value.(type) {
+	case nil:
+		buf.WriteString("null")
+	case bool:
+		if v {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+	case float64:
+		buf.WriteString(formatESNumber(v))
+	case string:
+		writeESString(buf, v)
+	case []any:
+		buf.WriteByte('[')
+		for i, item := range v {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := writeCanonical(buf, item); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		// JCS sorts by UTF-16 code units, which differs from Go's default
+		// byte/code-point ordering for astral-plane characters.
+		sort.Slice(keys, func(i, j int) bool { return utf16Less(keys[i], keys[j]) })
+		buf.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			writeESString(buf, k)
+			buf.WriteByte(':')
+			if err := writeCanonical(buf, v[k]); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+	default:
+		return fmt.Errorf("canonical JSON: unsupported type %T", value)
+	}
+	return nil
+}
+
+func utf16Less(a, b string) bool {
+	ua := utf16.Encode([]rune(a))
+	ub := utf16.Encode([]rune(b))
+	n := len(ua)
+	if len(ub) < n {
+		n = len(ub)
+	}
+	for i := 0; i < n; i++ {
+		if ua[i] != ub[i] {
+			return ua[i] < ub[i]
+		}
+	}
+	return len(ua) < len(ub)
+}
+
+func writeESString(buf *bytes.Buffer, s string) {
+	buf.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			buf.WriteString(`\"`)
+		case '\\':
+			buf.WriteString(`\\`)
+		case '\b':
+			buf.WriteString(`\b`)
+		case '\f':
+			buf.WriteString(`\f`)
+		case '\n':
+			buf.WriteString(`\n`)
+		case '\r':
+			buf.WriteString(`\r`)
+		case '\t':
+			buf.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(buf, `\u%04x`, r)
+			} else {
+				buf.WriteRune(r)
+			}
+		}
+	}
+	buf.WriteByte('"')
+}
+
+// formatESNumber implements ECMAScript Number::toString (the number format
+// required by RFC 8785). strconv's 'g' format uses different thresholds and
+// exponent padding, so the shortest 'e' form is reformatted by hand.
+func formatESNumber(f float64) string {
+	if f == 0 {
+		return "0" // also normalizes -0
+	}
+	s := strconv.FormatFloat(f, 'e', -1, 64)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	ePos := strings.IndexByte(s, 'e')
+	if ePos < 0 {
+		return s
+	}
+	digits := strings.Replace(s[:ePos], ".", "", 1)
+	exp, err := strconv.Atoi(s[ePos+1:])
+	if err != nil {
+		return s
+	}
+	n := exp + 1
+	k := len(digits)
+	var out string
+	switch {
+	case k <= n && n <= 21:
+		out = digits + strings.Repeat("0", n-k)
+	case 0 < n && n <= 21:
+		out = digits[:n] + "." + digits[n:]
+	case -6 < n && n <= 0:
+		out = "0." + strings.Repeat("0", -n) + digits
+	default:
+		if k == 1 {
+			out = digits
+		} else {
+			out = digits[:1] + "." + digits[1:]
+		}
+		e := n - 1
+		if e >= 0 {
+			out += "e+" + strconv.Itoa(e)
+		} else {
+			out += "e-" + strconv.Itoa(-e)
+		}
+	}
+	if neg {
+		return "-" + out
+	}
+	return out
+}
+
+func requireEOF(dec *json.Decoder) error {
+	var extra any
+	err := dec.Decode(&extra)
+	if err == io.EOF {
+		return nil
+	}
+	return err
 }
 
 // LWWMap is a state-based last-writer-wins map keyed by string. Values are

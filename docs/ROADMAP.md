@@ -71,3 +71,20 @@ code to a hiring manager.
 Collaborative *text* with character-level merging needs a sequence CRDT
 (RGA / Yjs-style) rather than the LWW-Map. Large effort; only pursue if the
 text-editing demo becomes the headline use case.
+
+A small foundation now exists in `internal/sequence` and `sdk/sequence.js` so
+the model is available for future text-editing work, but it is not yet wired
+into the main application flow. A browser scratchpad prototype in
+`demo/sequence.html` demonstrates the model in a collaborative tab-to-tab
+setting.
+
+For horizontal scaling, the repo now also has a rendezvous shard planner and a
+minimal in-process cluster bus. That gives us a concrete room-placement and
+event-fanout primitive, but it is still a foundation rather than a full
+multi-process deployment.
+
+The remaining gap is external cluster membership and a production-ready
+multi-node control plane for those room events; the bus is still best thought
+of as a local development and test primitive. The wire codec and HTTP ingress
+/ egress shape now exist, so the next step can focus on the cluster plumbing
+rather than the event model itself.
