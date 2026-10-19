@@ -1,8 +1,6 @@
 # Syncwell
 
-<!-- CI badge: add one after pushing, e.g.
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
--->
+[![CI](https://github.com/Nil-Vaghani/syncwell/actions/workflows/ci.yml/badge.svg)](https://github.com/Nil-Vaghani/syncwell/actions/workflows/ci.yml)
 &nbsp;![Go](https://img.shields.io/badge/Go-1.23-00ADD8) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **Add multiplayer — live cursors, presence, and conflict-free shared state — to any app with a few lines of code. Self-hostable, single binary, language-agnostic.**

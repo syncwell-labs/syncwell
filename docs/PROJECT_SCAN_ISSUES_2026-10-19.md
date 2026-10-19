@@ -515,7 +515,7 @@ The Dockerfile now uses exec-form `ENTRYPOINT ["/syncwell"] CMD [...]` (good, fi
 - [x] `go test ./... -race` green
 - [x] `cd sdk && node --test` green (27 tests, incl. 9 conformance fixtures)
 - [x] `make all` green (incl. `e2e`, `persist`, `gc`, `test-multi-client`, `chaos`)
-- [ ] CI runs on the actual default branch and reports green (this repo still has no git remote; branch filters now include `main` and `master`. The split `syncwell-public` repo's CI is green.)
+- [x] CI runs on the actual default branch and reports green (`Nil-Vaghani/syncwell` @ `master`, run 39298596921; split `syncwell-public` run 39297691968 also green)
 - [x] Each H-item has a regression test that fails before the fix
 - [x] README/PLAN claims match measured reality (~10.5 MB binary, 2026-10-19 status)
 
@@ -542,3 +542,7 @@ The Dockerfile now uses exec-form `ENTRYPOINT ["/syncwell"] CMD [...]` (good, fi
 | L1 | Fixed | README badge placeholder clarified, binary size updated to ~10.5 MB, PLAN status restated and linked to this audit. |
 | L2 | Fixed | `syncwell-engine/` and `syncwell-public/` removed from the working tree after verifying they were clean/pushed. |
 | L3 | Fixed | The affected nested tree is out of this repo. The standalone `Nil-Vaghani/syncwell-public` repo was also fixed: `go.sum` committed, `gorilla/websocket` demoted to indirect, Dockerfile uses a BuildKit `github_token` secret (no `ARG`/layer leak), CI uses `ENGINE_TOKEN`, and its pipeline is green (run 39297691968). Replace the broad `ENGINE_TOKEN` secret with a fine-scoped read-only PAT when convenient. |
+
+_Also fixed while verifying CI:_ `test/browser_kanban_e2e.mjs` hard-coded an
+owner-specific absolute path to `demo/kanban.html`; it now resolves the demo
+relative to the test file, so browser E2E runs on any checkout.
