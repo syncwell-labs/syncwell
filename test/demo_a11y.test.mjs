@@ -12,12 +12,14 @@ test("demo index exposes accessible live-status and labelled inputs", () => {
   assert.match(html, /label for="doc"/);
 });
 
-test("sequence scratchpad exposes a labelled textarea and live status", () => {
+test("collaborative text demo exposes a labelled editor and live status", () => {
   const html = read("demo/sequence.html");
   assert.match(html, /role="status"/);
   assert.match(html, /aria-live="polite"/);
   assert.match(html, /label for="doc"/);
-  assert.match(html, /sequence scratchpad/i);
+  assert.match(html, /collaborative text/i);
+  assert.match(html, /id="undo"/);
+  assert.match(html, /id="redo"/);
 });
 
 test("kanban demo exposes keyboard-friendly controls and labels", () => {

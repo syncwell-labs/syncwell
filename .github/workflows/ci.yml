@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -19,8 +19,20 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Vet, unit + race tests, JS tests, e2e, persistence, GC, build
+      - name: SDK install, typecheck, build
+        working-directory: sdk
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+          node -e "require('./dist/cjs/syncwell.cjs')"
+
+      - name: Vet, unit + race tests, coverage gate, JS tests, e2e, persistence, restore, GC, build
         run: make all VERSION=ci COMMIT=${GITHUB_SHA::12} BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+      - name: Python polyglot client E2E
+        run: make test-python
 
       - name: Container build/start smoke
         run: make container-smoke VERSION=ci COMMIT=${GITHUB_SHA::12} BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -33,11 +45,22 @@ jobs:
 
       - name: Browser E2E
         run: |
-          if command -v firefox >/dev/null && command -v geckodriver >/dev/null; then
-            node --test test/browser_kanban_e2e.mjs
-          else
-            echo "Skipping browser E2E: firefox/geckodriver unavailable"
-          fi
+          # ubuntu-latest ships both; fail loudly if that ever changes rather
+          # than silently dropping the only real-browser coverage.
+          command -v firefox
+          command -v geckodriver
+          node --test test/browser_kanban_e2e.mjs
+
+      - name: Build docs site
+        env:
+          DOCS_BASE: /syncwell/
+        run: make docs-build
+
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: "1.23"
+          go-package: ./...
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4

@@ -1,0 +1,22 @@
+:root {
+  --vp-c-brand-1: #2f6bff;
+  --vp-c-brand-2: #2458d8;
+  --vp-c-brand-3: #1c47b3;
+  --vp-c-brand-soft: rgba(47, 107, 255, 0.14);
+}
+
+.VPHero .name {
+  background: linear-gradient(120deg, #2f6bff, #52b7ff 60%, #8f7bff);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.VPFeature {
+  border: 1px solid var(--vp-c-divider);
+  background: linear-gradient(160deg, var(--vp-c-bg-soft), var(--vp-c-bg));
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+}

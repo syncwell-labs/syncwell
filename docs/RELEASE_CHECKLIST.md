@@ -1,64 +1,109 @@
 # Release checklist
 
 Everything ships from this one repository: the engine (Go), the SDK (JS), the
-demos, and the docs. This checklist is the owner-facing release path.
+demos, and the docs. Releases are automated from tags; this checklist is the
+owner-facing path and the manual fallback.
 
 ## 0. Pre-flight (must be true)
 
-- [ ] `make all` is green locally.
-- [ ] CI on `main` is green.
-- [ ] No secrets in the tree or history (`git log -p | grep -E 'gh[pous]_|PRIVATE KEY'`).
+- [ ] `make all` is green locally (includes fmt, vet, race tests, coverage
+      floors, JS tests, e2e, persistence, restore drill, GC, chaos, build).
+- [ ] `make test-python` is green (polyglot client against the real server).
+- [ ] `make sdk-typecheck sdk-build` is green, and `cd sdk && npm pack --dry-run`
+      lists `dist/`, all runtime `.js` files (map, text, awareness, storage),
+      and the `.d.ts` files.
+- [ ] `make docs-build` is green.
+- [ ] Protocol contract tests pass; no v1 break without a v2 plan (see
+      [`PROTOCOL_COMPATIBILITY.md`](PROTOCOL_COMPATIBILITY.md)).
+- [ ] CI on `main` is green (including browser E2E, Python E2E, and container
+      smoke; the container smoke also checks `/admin` and the new SDK assets).
+- [ ] No secrets in the tree or history
+      (`git log -p | grep -E 'gh[pous]_|PRIVATE KEY'`).
 - [ ] `docs/READINESS_AUDIT_2026-10-19.md` blockers that apply to the claim you
       are making are closed.
 
-## 1. Version and tag
+## 1. Versions
 
-- [ ] Bump `internal/version` (or the build metadata) as needed.
-- [ ] Write the release notes.
-- [ ] `git tag vX.Y.Z && git push origin vX.Y.Z`.
+- [ ] Bump `sdk/package.json` `version` when publishing the client.
+- [ ] Decide the engine tag (`vX.Y.Z`); `internal/version` is injected by
+      GoReleaser and the Docker build, so no source edit is needed.
+- [ ] Write the release notes (the changelog is generated from commits; edit the
+      draft if needed).
 
-## 2. Publish the SDK
+## 2. Tag the engine (`vX.Y.Z`)
 
-The browser/Node client lives in `sdk/` and publishes as `syncwell-client`.
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The `Release` workflow then:
+
+1. runs GoReleaser — linux/darwin/windows × amd64/arm64 archives,
+   `checksums.txt`, SPDX SBOMs, and a GitHub release;
+2. builds and pushes the multi-arch image
+   `ghcr.io/nil-vaghani/syncwell:X.Y.Z` (plus `X.Y` and `sha-*`) with
+   provenance + SBOM attestations;
+3. signs the image digest with cosign using GitHub OIDC (keyless).
+
+Verify :
+
+```bash
+cosign verify ghcr.io/nil-vaghani/syncwell:X.Y.Z \
+  --certificate-identity-regexp 'https://github.com/Nil-Vaghani/syncwell/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker run --rm -p 8080:8080 ghcr.io/nil-vaghani/syncwell:X.Y.Z -version
+```
+
+## 3. Publish the SDK (`sdk-vX.Y.Z`)
+
+The tag **must** match `sdk/package.json` `version`; the workflow fails otherwise.
+
+```bash
+cd sdk && npm test && npm run typecheck && npm run build
+cd .. && git tag sdk-vX.Y.Z && git push origin sdk-vX.Y.Z
+```
+
+The `Release SDK` workflow runs `npm ci`, tests, typechecks, builds, and
+publishes `syncwell-client` with provenance:
+
+```bash
+npm publish --provenance --access public
+```
+
+`NPM_TOKEN` is a repository secret (an npm automation/granular token with publish
+rights to `syncwell-client`). Manual fallback for a first publish:
 
 ```bash
 cd sdk
-npm test
-npm view syncwell-client version   # confirm the new version is not taken
+npm view syncwell-client version   # confirm the version is not taken
 npm publish --access public
 ```
 
-Verify `package.json` still names the package `syncwell-client`, that `files`
-lists only the runtime JS, and that `version` was bumped intentionally.
-
-## 3. Publish the container image
-
-```bash
-docker build \
-  --build-arg VERSION=vX.Y.Z \
-  --build-arg COMMIT=$(git rev-parse --short HEAD) \
-  --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  -t YOUR_REGISTRY/syncwell:vX.Y.Z .
-docker push YOUR_REGISTRY/syncwell:vX.Y.Z
-```
-
-There is no build-time secret: the image is built entirely from this repo.
-
 ## 4. Deploy and verify
 
-- [ ] Deploy the tagged image with `SYNCWELL_SECRET`, `SYNCWELL_ADMIN_TOKEN`,
-      `SYNCWELL_ORIGINS`, and `SYNCWELL_DATA` set (see
-      [`docs/DEPLOY.md`](DEPLOY.md)).
+- [ ] Deploy the tagged image or binary using a template in
+      [`docs/DEPLOY.md`](DEPLOY.md) (Compose/Fly/Render/nginx/Caddy/systemd).
+- [ ] Set `SYNCWELL_SECRET`, `SYNCWELL_ADMIN_TOKEN`, `SYNCWELL_ORIGINS`, and
+      `SYNCWELL_DATA`; chown the volume to uid `65532` once.
 - [ ] `curl -s https://HOST/healthz` → `ok`.
 - [ ] `curl -sI https://HOST/sdk/syncwell.js` → `200`.
 - [ ] `/stats` and `/metrics` require the admin token.
 - [ ] Open the kanban demo in two windows; edits propagate live.
 - [ ] Partition/reconnect converges (see
       [`docs/PARTITION_CONVERGENCE_DEMO.md`](PARTITION_CONVERGENCE_DEMO.md)).
+- [ ] If running multiple nodes, check `syncwell_cluster_peer_up` and
+      `syncwell_cluster_events_dropped_total` (see [`docs/ALERTS.md`](ALERTS.md)).
+- [ ] Deploy the docs site from the `Docs` workflow and verify the Pages URL.
+- [ ] Deploy the hosted demo pinned to the release tag/digest, set the
+      `DEMO_URL` repository variable, and confirm the `Demo smoke` workflow.
+      Follow [`LAUNCH.md`](LAUNCH.md).
 
 ## 5. Update the README
 
-- [ ] Replace the "still ahead" placeholder with the real values: hosted demo
-      URL, npm package URL, release tag.
-- [ ] If the benchmark table changed, regenerate it with `make bench` and note
-      the conditions.
+- [ ] Replace the "still ahead" placeholder with the real values: docs URL,
+      hosted demo/status URL, npm package URL, release tag.
+- [ ] Publish the refreshed launch post from [`BLOG.md`](BLOG.md).
+- [ ] If the benchmark table changed, run the `Benchmark` workflow (fixed
+      parameters) or `CLIENTS=50 DURATION_MS=3000 make bench`, and note the
+      conditions. Runners are shared; treat the numbers as indicative.

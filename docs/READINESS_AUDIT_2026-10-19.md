@@ -15,6 +15,14 @@ This document is deliberately adversarial. It exists because the issue list in
 *complete* (all B/H/M/L items fixed, CI green) and it is easy to read that as
 "the project is ready". It is not. "Scan complete" ≠ "shippable".
 
+> **Status update (2026-10-20):** B-1, B-2, B-3, H-2, H-3, H-4, M-2, M-3, M-4,
+> M-5, M-7, and L-1/L-2 are resolved on `main` — see the Progress section of
+> [`COMPLETION_PLAN_2026-10-20.md`](COMPLETION_PLAN_2026-10-20.md). H-1's release
+> path is implemented (GoReleaser, npm provenance, multi-arch signed GHCR, deploy
+> templates); publishing only requires pushing the first `v*` and `sdk-v*` tags.
+> The verdict and findings below describe commit `d042169` and are kept as an
+> audit trail.
+
 ---
 
 ## What is actually ready
@@ -184,17 +192,17 @@ These block any honest "production" or "multi-node" claim.
 
 **Self-host beta (one node, trusted network)**
 - [ ] H-1: tag a release, publish the npm SDK, publish a container image
-- [ ] H-3: safe auth defaults + loud warnings on public bind
-- [ ] H-4: automated backup script + a restore test in CI
-- [ ] M-3 / M-4: coverage gate, vuln scan, and a browser-E2E step that fails
+- [x] H-3: public binds auto-generate credentials once; `-insecure` warns loudly
+- [x] H-4: automated backup script + a restore test in CI
+- [x] M-3 / M-4: coverage gate, vuln scan, and a browser-E2E step that fails
       (not skips) when the browser is unavailable
-- [ ] L-1 / L-2: correct the durability and benchmark wording
+- [x] L-1 / L-2: correct the durability and benchmark wording
 
 **Multi-node scale**
-- [ ] B-1: wire a real `ClusterBus`, make `/cluster/event` accept relayed events
-- [ ] B-2: `-node-id` + `-node-peers`, unique-identity enforcement
-- [ ] B-3: configurable fsync durability contract
-- [ ] M-5: two-node integration test through the HTTP relay
+- [x] B-1: wire a real `ClusterBus`, make `/cluster/event` accept relayed events
+- [x] B-2: `-node-id` + `-node-peers`, unique-identity enforcement
+- [x] B-3: configurable fsync durability contract
+- [x] M-5: two-node integration test through the HTTP relay
 
 **Public launch**
 - [ ] Everything above, plus a hosted demo URL, live status, and published docs

@@ -1,17 +1,92 @@
 {
   "name": "syncwell-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Zero-dependency browser/Node client for the Syncwell real-time collaboration engine.",
   "type": "module",
-  "main": "syncwell.js",
+  "main": "./dist/cjs/syncwell.cjs",
+  "module": "./dist/esm/syncwell.js",
+  "types": "./syncwell.d.ts",
   "exports": {
-    ".": "./syncwell.js",
-    "./crdt": "./crdt.js",
-    "./sequence": "./sequence.js"
+    ".": {
+      "types": "./syncwell.d.ts",
+      "import": "./dist/esm/syncwell.js",
+      "require": "./dist/cjs/syncwell.cjs"
+    },
+    "./crdt": {
+      "types": "./crdt.d.ts",
+      "import": "./dist/esm/crdt.js",
+      "require": "./dist/cjs/crdt.cjs"
+    },
+    "./sequence": {
+      "types": "./sequence.d.ts",
+      "import": "./dist/esm/sequence.js",
+      "require": "./dist/cjs/sequence.cjs"
+    },
+    "./browser": "./dist/syncwell.min.js",
+    "./package.json": "./package.json",
+    "./text": {
+      "types": "./text.d.ts",
+      "import": "./dist/esm/text.js",
+      "require": "./dist/cjs/text.cjs"
+    },
+    "./awareness": {
+      "types": "./awareness.d.ts",
+      "import": "./dist/esm/awareness.js",
+      "require": "./dist/cjs/awareness.cjs"
+    },
+    "./storage": {
+      "types": "./storage.d.ts",
+      "import": "./dist/esm/storage.js",
+      "require": "./dist/cjs/storage.cjs"
+    },
+    "./storage-node": {
+      "types": "./storage-node.d.ts",
+      "import": "./storage-node.js",
+      "require": "./storage-node.js"
+    }
   },
+  "sideEffects": false,
+  "files": [
+    "syncwell.js",
+    "crdt.js",
+    "sequence.js",
+    "text.js",
+    "awareness.js",
+    "storage.js",
+    "storage-node.js",
+    "*.d.ts",
+    "dist/",
+    "README.md"
+  ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "build": "node build.mjs",
+    "prepublishOnly": "npm test && npm run typecheck && npm run build",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "crdt",
+    "realtime",
+    "collaboration",
+    "websocket",
+    "offline-first",
+    "syncwell"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nil-Vaghani/syncwell.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/Nil-Vaghani/syncwell#readme",
+  "bugs": {
+    "url": "https://github.com/Nil-Vaghani/syncwell/issues"
   },
   "license": "MIT",
-  "files": ["syncwell.js", "crdt.js", "sequence.js"]
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
 }

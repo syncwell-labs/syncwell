@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell admin</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f5f7fb;
+        --panel: #ffffff;
+        --text: #132033;
+        --muted: #5f6b82;
+        --border: rgba(19, 32, 51, 0.14);
+        --accent: #2f6bff;
+        --accent-contrast: #ffffff;
+        --danger: #c0392b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0e1422;
+          --panel: #171f31;
+          --text: #e7edf8;
+          --muted: #9aa7c2;
+          --border: rgba(231, 237, 248, 0.12);
+          --accent: #7aa2ff;
+          --accent-contrast: #0b1220;
+          --danger: #ff7a6b;
+        }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+      main { max-width: 1080px; margin: 0 auto; padding: 32px 16px; }
+      h1 { margin: 0 0 4px; font-size: 28px; }
+      p { color: var(--muted); margin: 0 0 20px; }
+      .bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+      input {
+        flex: 1 1 280px; padding: 9px 12px; border-radius: 9px;
+        border: 1px solid var(--border); background: var(--panel); color: inherit; font: inherit;
+      }
+      button {
+        padding: 9px 14px; border-radius: 9px; border: 1px solid var(--border);
+        background: var(--panel); color: inherit; font: inherit; cursor: pointer;
+      }
+      button:focus-visible, input:focus-visible {
+        outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft, rgba(47, 107, 255, 0.25));
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+      button.danger { color: var(--danger); }
+      table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 12px; overflow: hidden; }
+      th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+      th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+      tr:last-child td { border-bottom: 0; }
+      td.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+      #error { color: var(--danger); min-height: 1.4em; margin-bottom: 12px; }
+      code { background: rgba(127, 127, 127, 0.15); padding: 1px 5px; border-radius: 5px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Syncwell admin</h1>
+      <p>
+        Live rooms on this node. The token is kept in <code>sessionStorage</code> and sent only in the
+        <code>Authorization</code> header. <a href="/">Back to the demo</a>
+      </p>
+      <div class="bar">
+        <input id="token" type="password" placeholder="Admin token (SYNCWELL_ADMIN_TOKEN)" autocomplete="off" />
+        <button class="primary" id="refresh">Refresh</button>
+      </div>
+      <div id="error" role="alert"></div>
+      <table>
+        <thead>
+          <tr><th>Room</th><th>Clients</th><th>Live</th><th>Tombstones</th><th>Low water</th><th>Owner</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="rooms"><tr><td colspan="7">Enter a token and refresh.</td></tr></tbody>
+      </table>
+    </main>
+    <script>
+      const tokenEl = document.getElementById("token");
+      const roomsEl = document.getElementById("rooms");
+      const errorEl = document.getElementById("error");
+      tokenEl.value = sessionStorage.getItem("syncwell-admin-token") || "";
+      tokenEl.addEventListener("change", () => sessionStorage.setItem("syncwell-admin-token", tokenEl.value));
+
+      function headers() {
+        return tokenEl.value ? { Authorization: `Bearer ${tokenEl.value}` } : {};
+      }
+
+      function clearError() { errorEl.textContent = ""; }
+      function showError(message) { errorEl.textContent = message; }
+
+      function row(room) {
+        const tr = document.createElement("tr");
+        for (const value of [room.id, room.clients, room.live, room.tombstones, room.lowWater, room.owner || "—"]) {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          tr.appendChild(td);
+        }
+        const actions = document.createElement("td");
+        actions.className = "actions";
+        for (const [label, action, className] of [
+          ["Resnapshot", "resnapshot", ""],
+          ["Evict", "evict", "danger"],
+        ]) {
+          const button = document.createElement("button");
+          button.textContent = label;
+          button.className = className;
+          button.addEventListener("click", () => act(room.id, action));
+          actions.appendChild(button);
+        }
+        tr.appendChild(actions);
+        return tr;
+      }
+
+      async function refresh() {
+        clearError();
+        const refreshBtn = document.getElementById("refresh");
+        refreshBtn.disabled = true;
+        try {
+          const res = await fetch("/admin/api/rooms", { headers: headers() });
+          if (!res.ok) {
+            roomsEl.innerHTML = "";
+            showError(res.status === 401 ? "Unauthorized: check the admin token." : `Request failed (${res.status}).`);
+            return;
+          }
+          const data = await res.json();
+          roomsEl.innerHTML = "";
+          if (!data.rooms.length) {
+            const tr = document.createElement("tr");
+            const td = document.createElement("td");
+            td.colSpan = 7;
+            td.textContent = "No live rooms.";
+            tr.appendChild(td);
+            roomsEl.appendChild(tr);
+            return;
+          }
+          data.rooms.sort((a, b) => a.id.localeCompare(b.id));
+          for (const room of data.rooms) roomsEl.appendChild(row(room));
+        } catch (err) {
+          roomsEl.innerHTML = "";
+          showError(`Network error: ${err?.message || err} — is the server reachable?`);
+        } finally {
+          refreshBtn.disabled = false;
+        }
+      }
+
+      async function act(room, action) {
+        clearError();
+        if (action === "evict" && !confirm(`Evict room "${room}" and disconnect its clients?`)) return;
+        try {
+          const res = await fetch(`/admin/api/rooms/${encodeURIComponent(room)}/${action}`, {
+            method: "POST",
+            headers: headers(),
+          });
+          if (!res.ok) {
+            showError(`${action} failed (${res.status}).`);
+            return;
+          }
+        } catch (err) {
+          showError(`Network error: ${err?.message || err} — is the server reachable?`);
+          return;
+        }
+        await refresh();
+      }
+
+      document.getElementById("refresh").addEventListener("click", refresh);
+      if (tokenEl.value) refresh();
+    </script>
+  </body>
+</html>

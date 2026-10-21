@@ -1,0 +1,49 @@
+name: Release SDK
+
+on:
+  push:
+    tags: ["sdk-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run tests/build only (do not publish)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install
+        run: npm ci
+
+      - name: Test, typecheck, build
+        run: |
+          npm test
+          npm run typecheck
+          npm run build
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/sdk-v')
+        run: |
+          node -e "const p=require('./package.json');const t=process.env.GITHUB_REF_NAME.replace(/^sdk-v/,'');if(p.version!==t){console.error('package.json version '+p.version+' != tag '+t);process.exit(1)}"
+
+      - name: Publish with provenance
+        if: startsWith(github.ref, 'refs/tags/sdk-v') || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

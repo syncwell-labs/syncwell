@@ -65,3 +65,33 @@ func TestAdminAllowedRejectsNonAdminCapabilityToken(t *testing.T) {
 		t.Fatal("non-admin capability token accepted")
 	}
 }
+
+func TestVerifyTokenAcceptsPreviousSecret(t *testing.T) {
+	h := NewHub(Config{Secret: "new-secret", PreviousSecrets: []string{"old-secret"}})
+	now := time.Now().Unix()
+	tok := SignAccessToken("old-secret", "room-1", now+60, []string{CapRead}, "jti")
+
+	claims, ok := h.verifyToken("room-1", tok, now)
+	if !ok || claims.Room != "room-1" {
+		t.Fatal("token signed with the previous secret should be accepted")
+	}
+	if _, ok := h.verifyToken("room-2", tok, now); ok {
+		t.Fatal("previous-secret token must not cross rooms")
+	}
+	if _, ok := h.verifyToken("room-1", tok, now+120); ok {
+		t.Fatal("expired token accepted")
+	}
+	unknown := SignAccessToken("other-secret", "room-1", now+60, []string{CapRead}, "")
+	if _, ok := h.verifyToken("room-1", unknown, now); ok {
+		t.Fatal("token signed with an unknown secret accepted")
+	}
+}
+
+func TestConfigValidateSecretRotation(t *testing.T) {
+	if err := (Config{PreviousSecrets: []string{"old"}}).Validate(); err == nil {
+		t.Fatal("previous secrets without a current secret should be rejected")
+	}
+	if err := (Config{Secret: "new", PreviousSecrets: []string{"old"}}).Validate(); err != nil {
+		t.Fatalf("valid rotation config rejected: %v", err)
+	}
+}

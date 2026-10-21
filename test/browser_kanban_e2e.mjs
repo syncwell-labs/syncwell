@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
@@ -121,6 +122,14 @@ async function waitFor(sessionId, script, timeoutMs = 8000) {
 }
 
 test("kanban browser e2e passes at desktop and mobile widths", async () => {
+  assert.ok(
+    existsSync(firefoxBin),
+    `firefox not found at ${firefoxBin}; install it or set FIREFOX_BIN`,
+  );
+  assert.ok(
+    existsSync(geckodriverBin),
+    `geckodriver not found at ${geckodriverBin}; install it or set GECKODRIVER_BIN`,
+  );
   await withSession(async (sessionId) => {
     await setWindowRect(sessionId, 1280, 900);
     await navigate(sessionId, demoURL);

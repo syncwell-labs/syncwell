@@ -5,12 +5,18 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,27 +27,65 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", envOr("SYNCWELL_ADDR", ":8080"), "listen address")
+	addr := flag.String("addr", envOr("SYNCWELL_ADDR", ":"+envOr("PORT", "8080")), "listen address")
 	static := flag.String("static", "demo", "directory of static files to serve at / (skipped if missing)")
 	sdk := flag.String("sdk", "sdk", "directory of the client SDK to serve at /sdk/ (skipped if missing)")
 	data := flag.String("data", envOr("SYNCWELL_DATA", ""), "data directory for persistence (empty = in-memory)")
+	fsyncMode := flag.String("fsync", envOr("SYNCWELL_FSYNC", "batch"), "durability: os (fastest), batch (default), every (power-loss safe)")
+	fsyncInterval := flag.Duration("fsync-interval", envDuration("SYNCWELL_FSYNC_INTERVAL", 5*time.Millisecond), "batch fsync interval")
+	maxLogBytes := flag.Int64("max-log-bytes", envInt64("SYNCWELL_MAX_LOG_BYTES", 64<<20), "compact a room log once it reaches this many bytes (0 = unlimited)")
+	backupDir := flag.String("backup", "", "copy -data into this directory with a checksummed manifest and exit")
+	restoreDir := flag.String("restore", "", "verify this backup directory and restore it into -data, then exit")
+	verifyBackupDir := flag.String("verify-backup", "", "verify a backup directory and exit")
 	compact := flag.Int("compact", 256, "winning writes between maintenance passes (tombstone GC + compaction)")
-	secret := flag.String("secret", envOr("SYNCWELL_SECRET", ""), "HMAC secret for room tokens (empty = auth disabled)")
-	adminToken := flag.String("admin-token", envOr("SYNCWELL_ADMIN_TOKEN", ""), "bearer token for operational endpoints like /stats (empty = open)")
+	secret := flag.String("secret", envOr("SYNCWELL_SECRET", ""), "HMAC secret for room tokens (empty on a public bind = generated once)")
+	secretPrevious := flag.String("secret-previous", envOr("SYNCWELL_SECRET_PREVIOUS", ""), "comma-separated old secrets still accepted for token verification (rotation)")
+	adminToken := flag.String("admin-token", envOr("SYNCWELL_ADMIN_TOKEN", ""), "bearer token for operational endpoints like /stats (empty on a public bind = generated once)")
+	oidcIssuer := flag.String("oidc-issuer", envOr("SYNCWELL_OIDC_ISSUER", ""), "OIDC issuer URL; enables external JWT room/admin auth")
+	oidcAudience := flag.String("oidc-audience", envOr("SYNCWELL_OIDC_AUDIENCE", ""), "required aud claim when set")
+	oidcJWKS := flag.String("oidc-jwks", envOr("SYNCWELL_OIDC_JWKS", ""), "JWKS URL (empty = discover from the issuer)")
+	oidcRoomClaim := flag.String("oidc-room-claim", envOr("SYNCWELL_OIDC_ROOM_CLAIM", "syncwell_room"), "JWT claim holding the allowed room (or *)")
+	oidcCapsClaim := flag.String("oidc-caps-claim", envOr("SYNCWELL_OIDC_CAPS_CLAIM", "syncwell_caps"), "JWT claim holding space/comma-separated capabilities")
+	oidcRefresh := flag.Duration("oidc-refresh", envDuration("SYNCWELL_OIDC_REFRESH", 15*time.Minute), "how often to refresh JWKS signing keys")
+	otelEndpoint := flag.String("otel-endpoint", envOr("SYNCWELL_OTEL_ENDPOINT", ""), "OTLP/HTTP trace endpoint (e.g. http://localhost:4318); empty = tracing disabled")
+	otelInsecure := flag.Bool("otel-insecure", envBool("SYNCWELL_OTEL_INSECURE", false), "send OTLP over plaintext (implied by an http:// endpoint)")
+	otelHeaders := flag.String("otel-headers", envOr("SYNCWELL_OTEL_HEADERS", ""), "comma-separated key=value headers for the OTLP exporter")
+	otelSample := flag.Float64("otel-sample-rate", envFloat("SYNCWELL_OTEL_SAMPLE_RATE", 0.1), "fraction of traces to sample (0..1)")
+	otelService := flag.String("otel-service-name", envOr("SYNCWELL_OTEL_SERVICE_NAME", "syncwell"), "service.name resource attribute")
+	insecure := flag.Bool("insecure", envBool("SYNCWELL_INSECURE", false), "allow a public bind without generating credentials (loudly unsafe)")
 	origins := flag.String("origins", envOr("SYNCWELL_ORIGINS", ""), "comma-separated allowed Origins (empty = allow any)")
-	maxClients := flag.Int("max-clients", 0, "max clients per room (0 = unlimited)")
-	maxRooms := flag.Int("max-rooms", 0, "max live rooms before new rooms are refused (0 = unlimited)")
-	idleRoomTTL := flag.Duration("idle-room-ttl", 0, "evict empty rooms after this idle period (0 = default 60s, negative = disabled)")
-	maxMessageBytes := flag.Int("max-message-bytes", 0, "max websocket message bytes (0 = default)")
+	adminRate := flag.Int("admin-rate", envInt("SYNCWELL_ADMIN_RATE", 0), "max admin requests/min per IP (0 = default 120, negative = unlimited)")
+	wsRate := flag.Int("ws-rate", envInt("SYNCWELL_WS_RATE", 0), "max websocket upgrade attempts/min per IP (0 = default 300, negative = unlimited)")
+	adminBurst := flag.Int("admin-burst", envInt("SYNCWELL_ADMIN_BURST", 0), "admin burst per IP (0 = default 30)")
+	adminMaxFailures := flag.Int("admin-max-failures", envInt("SYNCWELL_ADMIN_MAX_FAILURES", 0), "admin auth failures before lockout (0 = default 10)")
+	adminLockout := flag.Duration("admin-lockout", envDuration("SYNCWELL_ADMIN_LOCKOUT", 0), "lockout after repeated admin auth failures (0 = default 5m)")
+	adminAllowlist := flag.String("admin-allowlist", envOr("SYNCWELL_ADMIN_ALLOWLIST", ""), "comma-separated CIDRs allowed to reach /stats and /metrics (empty = any)")
+	clusterRate := flag.Int("cluster-rate", envInt("SYNCWELL_CLUSTER_RATE", 0), "max cluster relay requests/min per IP (0 = default 6000, negative = unlimited)")
+	clusterAllowlist := flag.String("cluster-allowlist", envOr("SYNCWELL_CLUSTER_ALLOWLIST", ""), "comma-separated CIDRs allowed to reach /cluster/event (empty = any)")
+	trustProxy := flag.Bool("trust-proxy", envBool("SYNCWELL_TRUST_PROXY", false), "use X-Forwarded-For for rate limits (only behind a trusted proxy)")
+	proxyHops := flag.Int("proxy-hops", envInt("SYNCWELL_PROXY_HOPS", 1), "number of trusted proxies in front of us; X-Forwarded-For is parsed right-to-left by this count")
+	maxClients := flag.Int("max-clients", envInt("SYNCWELL_MAX_CLIENTS", 256), "max clients per room (0 = unlimited, negative = default 256)")
+	maxRooms := flag.Int("max-rooms", envInt("SYNCWELL_MAX_ROOMS", 10000), "max live rooms before new rooms are refused (0 = unlimited, negative = default 10000)")
+	idleRoomTTL := flag.Duration("idle-room-ttl", envDuration("SYNCWELL_IDLE_ROOM_TTL", 0), "evict empty rooms after this idle period (0 = default 60s, negative = disabled)")
+	maxMessageBytes := flag.Int("max-message-bytes", envInt("SYNCWELL_MAX_MESSAGE_BYTES", 0), "max websocket message bytes (0 = default)")
 	maxRoomIDBytes := flag.Int("max-room-id-bytes", 0, "max room id bytes (0 = default)")
 	maxKeyBytes := flag.Int("max-key-bytes", 0, "max document key bytes (0 = default)")
 	maxNodeBytes := flag.Int("max-node-bytes", 0, "max client node id bytes (0 = default)")
 	maxValueBytes := flag.Int("max-value-bytes", 0, "max register JSON value bytes (0 = default)")
 	maxPresenceBytes := flag.Int("max-presence-bytes", 0, "max presence JSON bytes (0 = default)")
-	maxStateEntries := flag.Int("max-state-entries", 0, "max registers accepted in one merge frame (0 = default)")
-	maxMessagesPerSecond := flag.Int("max-messages-per-second", 0, "max websocket messages per client per second (0 = default)")
-	clusterPeers := flag.String("cluster-peers", envOr("SYNCWELL_CLUSTER_PEERS", ""), "comma-separated peer cluster event URLs (empty = local bus only)")
+	maxStateEntries := flag.Int("max-state-entries", envInt("SYNCWELL_MAX_STATE_ENTRIES", 0), "max registers accepted in one merge frame (0 = default)")
+	maxMessagesPerSecond := flag.Int("max-messages-per-second", envInt("SYNCWELL_MAX_MESSAGES_PER_SECOND", 0), "max websocket messages per client per second (0 = default)")
+	nodeID := flag.String("node-id", envOr("SYNCWELL_NODE_ID", ""), "unique node id (required when clustering)")
+	nodePeers := flag.String("node-peers", envOr("SYNCWELL_NODE_PEERS", ""), "comma-separated peer node ids for room placement")
+	clusterPeers := flag.String("cluster-peers", envOr("SYNCWELL_CLUSTER_PEERS", ""), "comma-separated peer cluster event URLs (empty = single node)")
 	clusterPath := flag.String("cluster-path", envOr("SYNCWELL_CLUSTER_PATH", "/cluster/event"), "HTTP path for cluster event posts")
+	antiEntropy := flag.Duration("anti-entropy", envDuration("SYNCWELL_ANTI_ENTROPY", 30*time.Second), "how often to push full room state to peers (0 = disabled)")
+	webhookURLs := flag.String("webhook-urls", envOr("SYNCWELL_WEBHOOK_URLS", ""), "comma-separated HTTP endpoints for room milestone webhooks")
+	webhookSecret := flag.String("webhook-secret", envOr("SYNCWELL_WEBHOOK_SECRET", ""), "HMAC-SHA256 secret used to sign webhook bodies")
+	webhookTimeout := flag.Duration("webhook-timeout", envDuration("SYNCWELL_WEBHOOK_TIMEOUT", 5*time.Second), "webhook delivery timeout")
+	webhookQueue := flag.Int("webhook-queue", envInt("SYNCWELL_WEBHOOK_QUEUE", 0), "webhook queue size (0 = default 256)")
+	tlsCert := flag.String("tls-cert", envOr("SYNCWELL_TLS_CERT", ""), "TLS certificate file (requires -tls-key)")
+	tlsKey := flag.String("tls-key", envOr("SYNCWELL_TLS_KEY", ""), "TLS private key file (requires -tls-cert)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	mint := flag.String("mint", "", "issue a token for this room and exit (requires -secret)")
 	mintSub := flag.String("mint-sub", "", "optional subject/principal id for -mint")
@@ -56,6 +100,9 @@ func main() {
 	if *showVersion {
 		fmt.Println(version.String())
 		return
+	}
+	if (*tlsCert == "") != (*tlsKey == "") {
+		log.Fatal("-tls-cert and -tls-key must be provided together")
 	}
 
 	// Token-minting helper: `syncwell -secret S -mint room` prints a token.
@@ -75,14 +122,122 @@ func main() {
 		return
 	}
 
-	var st store.Store
-	if *data != "" {
+	// Offline maintenance modes: verify, restore, and back up without serving.
+	if *verifyBackupDir != "" {
+		m, err := store.VerifyBackup(*verifyBackupDir)
+		if err != nil {
+			log.Fatalf("verify backup %q: %v", *verifyBackupDir, err)
+		}
+		fmt.Printf("backup ok: %d files, created %s\n", len(m.Files), m.Created.Format(time.RFC3339))
+		return
+	}
+	if *restoreDir != "" {
+		if *data == "" {
+			log.Fatal("-restore requires -data")
+		}
+		m, err := store.Restore(*restoreDir, *data)
+		if err != nil {
+			log.Fatalf("restore %q into %q: %v", *restoreDir, *data, err)
+		}
+		fmt.Printf("restored %d files into %s\n", len(m.Files), *data)
+		return
+	}
+	if *backupDir != "" {
+		if *data == "" {
+			log.Fatal("-backup requires -data")
+		}
 		fs, err := store.Open(*data)
 		if err != nil {
 			log.Fatalf("open data dir %q: %v", *data, err)
 		}
+		m, backupErr := fs.Backup(*backupDir)
+		if closeErr := fs.Close(); backupErr == nil {
+			backupErr = closeErr
+		}
+		if backupErr != nil {
+			log.Fatalf("backup %q: %v", *data, backupErr)
+		}
+		fmt.Printf("backed up %d files to %s\n", len(m.Files), *backupDir)
+		return
+	}
+
+	if publicBind(*addr) && !*insecure {
+		if *secret == "" {
+			generated, err := randomSecret()
+			if err != nil {
+				log.Fatalf("generate auth secret: %v", err)
+			}
+			*secret = generated
+			// Print the credential to stderr for the operator starting the
+			// process, but keep only a fingerprint in the structured log so
+			// log aggregation never becomes a credential store.
+			fmt.Fprintf(os.Stderr, "\n** generated room-token secret (copy it now, shown once): %s **\n"+
+				"** set -secret/SYNCWELL_SECRET to keep it stable across restarts **\n\n", generated)
+			server.LogEvent("auth_secret_generated", map[string]any{
+				"fingerprint": secretFingerprint(generated),
+				"note":        "printed to stderr once; set -secret/SYNCWELL_SECRET to keep it stable across restarts",
+			})
+		}
+		if *adminToken == "" {
+			if strings.TrimSpace(*clusterPeers) != "" {
+				log.Fatal("clustering requires an explicit -admin-token/SYNCWELL_ADMIN_TOKEN; auto-generated credentials differ per node")
+			}
+			generated, err := randomSecret()
+			if err != nil {
+				log.Fatalf("generate admin token: %v", err)
+			}
+			*adminToken = generated
+			fmt.Fprintf(os.Stderr, "\n** generated admin token (copy it now, shown once): %s **\n"+
+				"** set -admin-token/SYNCWELL_ADMIN_TOKEN to keep it stable **\n\n", generated)
+			server.LogEvent("admin_token_generated", map[string]any{
+				"fingerprint": secretFingerprint(generated),
+				"note":        "printed to stderr once; set -admin-token/SYNCWELL_ADMIN_TOKEN to keep it stable",
+			})
+		}
+	} else if publicBind(*addr) && *insecure && (*secret == "" || *adminToken == "") {
+		server.LogEvent("insecure_public_bind", map[string]any{
+			"room_auth":  *secret != "",
+			"admin_auth": *adminToken != "",
+			"warning":    "public bind with missing credentials; do not expose this to the internet",
+		})
+	}
+
+	var otelHeadersMap map[string]string
+	for _, part := range splitList(*otelHeaders) {
+		k, v, ok := strings.Cut(part, "=")
+		if !ok || strings.TrimSpace(k) == "" {
+			log.Fatalf("-otel-headers entry %q must be key=value", part)
+		}
+		if otelHeadersMap == nil {
+			otelHeadersMap = map[string]string{}
+		}
+		otelHeadersMap[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	tracerProvider, traceErr := server.InitTracing(context.Background(), server.TracingConfig{
+		Endpoint:    *otelEndpoint,
+		Insecure:    *otelInsecure,
+		Headers:     otelHeadersMap,
+		SampleRate:  *otelSample,
+		ServiceName: *otelService,
+	})
+	if traceErr != nil {
+		server.LogEvent("tracing_init_error", map[string]any{"error": traceErr.Error(), "note": "continuing without tracing"})
+		log.Printf("warning: tracing disabled: %v", traceErr)
+	}
+
+	mode, err := store.ParseFsyncMode(*fsyncMode)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	var st store.Store
+	if *data != "" {
+		fs, err := store.OpenWithOptions(*data, store.Options{Fsync: mode, SyncInterval: *fsyncInterval})
+		if err != nil {
+			log.Fatalf("open data dir %q: %v", *data, err)
+		}
 		st = fs
-		server.LogEvent("persistence_enabled", map[string]any{"dir": *data})
+		server.LogEvent("persistence_enabled", map[string]any{"dir": *data, "fsync": mode.String(), "max_log_bytes": *maxLogBytes})
 	}
 
 	var allowedOrigins []string
@@ -93,6 +248,10 @@ func main() {
 	if *clusterPeers != "" {
 		clusterPeerList = strings.Split(*clusterPeers, ",")
 	}
+	var nodePeerList []string
+	if *nodePeers != "" {
+		nodePeerList = strings.Split(*nodePeers, ",")
+	}
 	revoked := map[string]struct{}{}
 	if *revokedJTIs != "" {
 		for _, jti := range strings.Split(*revokedJTIs, ",") {
@@ -102,18 +261,37 @@ func main() {
 			}
 		}
 	}
-	hub := server.NewHub(server.Config{
-		Store:        st,
-		CompactEvery: *compact,
-		Secret:       *secret,
-		AdminToken:   *adminToken,
-		RevokedJTIs:  revoked,
-		Origins:      allowedOrigins,
-		MaxClients:   *maxClients,
-		MaxRooms:     *maxRooms,
-		IdleRoomTTL:  *idleRoomTTL,
-		ClusterPeers: clusterPeerList,
-		ClusterPath:  *clusterPath,
+	cfg := server.Config{
+		Store:                st,
+		CompactEvery:         *compact,
+		Secret:               *secret,
+		PreviousSecrets:      splitList(*secretPrevious),
+		AdminToken:           *adminToken,
+		RevokedJTIs:          revoked,
+		Origins:              allowedOrigins,
+		AdminRatePerMinute:   *adminRate,
+		WSRatePerMinute:      *wsRate,
+		AdminBurst:           *adminBurst,
+		AdminMaxFailures:     *adminMaxFailures,
+		AdminLockout:         *adminLockout,
+		AdminAllowlist:       splitList(*adminAllowlist),
+		ClusterRatePerMinute: *clusterRate,
+		ClusterAllowlist:     splitList(*clusterAllowlist),
+		TrustProxyHeaders:    *trustProxy,
+		ProxyHops:            *proxyHops,
+		MaxClients:           *maxClients,
+		MaxRooms:             *maxRooms,
+		MaxLogBytes:          *maxLogBytes,
+		IdleRoomTTL:          *idleRoomTTL,
+		NodeID:               *nodeID,
+		Peers:                nodePeerList,
+		ClusterPeers:         clusterPeerList,
+		ClusterPath:          *clusterPath,
+		AntiEntropyInterval:  *antiEntropy,
+		WebhookURLs:          splitList(*webhookURLs),
+		WebhookSecret:        *webhookSecret,
+		WebhookTimeout:       *webhookTimeout,
+		WebhookQueue:         *webhookQueue,
 		Limits: server.Limits{
 			MaxMessageBytes:      *maxMessageBytes,
 			MaxRoomIDBytes:       *maxRoomIDBytes,
@@ -124,7 +302,32 @@ func main() {
 			MaxStateEntries:      *maxStateEntries,
 			MaxMessagesPerSecond: *maxMessagesPerSecond,
 		},
-	})
+	}
+	var oidcVerifier *server.OIDCVerifier
+	if strings.TrimSpace(*oidcIssuer) != "" {
+		verifier, oidcErr := server.NewOIDCVerifier(context.Background(), server.OIDCConfig{
+			Issuer:    *oidcIssuer,
+			Audience:  *oidcAudience,
+			JWKSURL:   *oidcJWKS,
+			RoomClaim: *oidcRoomClaim,
+			CapsClaim: *oidcCapsClaim,
+			Refresh:   *oidcRefresh,
+		})
+		oidcVerifier = verifier
+		if oidcErr != nil {
+			server.LogEvent("oidc_jwks_unavailable", map[string]any{"error": oidcErr.Error(), "note": "tokens fail closed until a JWKS fetch succeeds"})
+			log.Printf("warning: OIDC enabled but JWKS is not available yet: %v", oidcErr)
+		} else {
+			server.LogEvent("oidc_enabled", map[string]any{"issuer": *oidcIssuer, "audience": *oidcAudience, "room_claim": *oidcRoomClaim, "caps_claim": *oidcCapsClaim})
+		}
+	} else if *oidcAudience != "" || *oidcJWKS != "" {
+		log.Fatal("-oidc-audience/-oidc-jwks require -oidc-issuer")
+	}
+	cfg.OIDC = oidcVerifier
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
+	hub := server.NewHub(cfg)
 	if *secret != "" {
 		server.LogEvent("room_token_auth_enabled", map[string]any{"caps": "read,write,presence"})
 	}
@@ -134,11 +337,17 @@ func main() {
 	if len(clusterPeerList) > 0 {
 		server.LogEvent("cluster_relay_enabled", map[string]any{"peers": len(clusterPeerList), "path": *clusterPath})
 	}
+	if len(splitList(*webhookURLs)) > 0 {
+		server.LogEvent("webhooks_enabled", map[string]any{"urls": len(splitList(*webhookURLs)), "signed": *webhookSecret != ""})
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", hub.ServeWS)
-	mux.HandleFunc("/stats", hub.ServeStats)
-	mux.HandleFunc("/metrics", hub.ServeMetrics)
-	mux.HandleFunc("/cluster/event", hub.ServeClusterEvent)
+	mux.Handle("/ws", hub.WSHandler(hub.ServeWS))
+	mux.Handle("/stats", hub.AdminHandler(hub.ServeStats))
+	mux.Handle("/metrics", hub.AdminHandler(hub.ServeMetrics))
+	mux.Handle("/cluster/event", hub.ClusterHandler(hub.ServeClusterEvent))
+	mux.HandleFunc("/admin", hub.ServeAdminUI)
+	mux.Handle("/admin/api/rooms", hub.AdminHandler(hub.ServeAdminRooms))
+	mux.Handle("/admin/api/rooms/", hub.AdminHandler(hub.ServeAdminRoomAction))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -153,7 +362,10 @@ func main() {
 		server.LogEvent("serving_demo", map[string]any{"dir": *static})
 	}
 
-	srv := &http.Server{Addr: *addr, Handler: mux}
+	srv := &http.Server{Addr: *addr, Handler: server.TracingMiddleware(mux)}
+	if *tlsCert != "" {
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 
 	// Graceful shutdown: drain connections and flush persistence on SIGINT/TERM.
 	go func() {
@@ -168,11 +380,25 @@ func main() {
 		if st != nil {
 			_ = st.Close()
 		}
+		if tracerProvider != nil {
+			_ = tracerProvider.Shutdown(ctx)
+		}
 	}()
 
-	server.LogEvent("startup", map[string]any{"version": version.String(), "addr": *addr, "websocket": "/ws?room=ID"})
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+	scheme := "http"
+	if *tlsCert != "" {
+		scheme = "https"
+	}
+	server.LogEvent("startup", map[string]any{"version": version.String(), "addr": *addr, "scheme": scheme, "websocket": "/ws?room=ID"})
+	var serveErr error
+	if *tlsCert != "" {
+		server.LogEvent("tls_enabled", map[string]any{"cert": *tlsCert, "min_version": "1.2"})
+		serveErr = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+	} else {
+		serveErr = srv.ListenAndServe()
+	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Fatal(serveErr)
 	}
 }
 
@@ -181,4 +407,83 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if v, err := strconv.ParseFloat(os.Getenv(key), 64); err == nil {
+		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
+		return v
+	}
+	return def
+}
+
+func envInt64(key string, def int64) int64 {
+	if v, err := strconv.ParseInt(os.Getenv(key), 10, 64); err == nil {
+		return v
+	}
+	return def
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	if v, err := time.ParseDuration(os.Getenv(key)); err == nil {
+		return v
+	}
+	return def
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func envBool(key string, def bool) bool {
+	if v, err := strconv.ParseBool(os.Getenv(key)); err == nil {
+		return v
+	}
+	return def
+}
+
+// publicBind reports whether addr accepts connections from outside this host.
+// Wildcard and non-loopback hosts are public; loopback is safe for local dev.
+func publicBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return true
+	}
+	if host == "0.0.0.0" || host == "::" {
+		return true
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback()
+	}
+	return true
+}
+
+func randomSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// secretFingerprint returns a short SHA-256 prefix for correlating log lines
+// without exposing the credential itself.
+func secretFingerprint(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:8])
 }

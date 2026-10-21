@@ -38,7 +38,7 @@ async function serverRSSkb(pid) {
 }
 
 async function main() {
-  const srv = spawn(BIN, ["-addr", `:${PORT}`], { stdio: "ignore" });
+  const srv = spawn(BIN, ["-addr", `127.0.0.1:${PORT}`], { stdio: "ignore" });
   try {
     await waitHealthy(PORT);
 

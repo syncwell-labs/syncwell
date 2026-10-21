@@ -1,0 +1,24 @@
+# Caddy reverse proxy for Syncwell. Caddy obtains and renews certificates
+# automatically and proxies WebSockets without extra configuration.
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+sync.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080 {
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Node-to-node relay and operational endpoints: keep them on the private
+	# network when possible.
+	@internal path /cluster/event /stats /metrics
+	handle @internal {
+		@private remote_ip 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12
+		handle @private {
+			reverse_proxy 127.0.0.1:8080
+		}
+		respond 403
+	}
+}

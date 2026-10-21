@@ -7,7 +7,7 @@ everything" to have something to show.
 
 ---
 
-## Phase 1 — Shared state + presence ✅ (current)
+## Phase 1 — Shared state + presence ✅
 
 **Goal:** two browsers edit one document live, conflict-free, with presence.
 
@@ -23,7 +23,7 @@ windows; tests are green.
 
 ---
 
-## Phase 2 — Offline + durability (the depth)
+## Phase 2 — Offline + durability ✅
 
 **Goal:** edit while disconnected, reconnect, converge; survive a restart.
 
@@ -43,11 +43,16 @@ code to a hiring manager.
 
 ---
 
-## Phase 3 — Make it real (the #1 hiring signal: real users)
+## Phase 3 — Make it real (the #1 hiring signal: real users) ✅
 
 **Goal:** other people run it.
 
-- [x] SDK packaged as `syncwell-client` (+ sdk/README.md); npm-publish-ready
+- [x] SDK packaged as `syncwell-client` with TypeScript declarations, ESM/CJS/
+      browser builds (+ sdk/README.md); npm-publish-ready
+- [x] Release automation: GoReleaser archives + checksums + SBOMs, npm
+      provenance workflow, multi-arch signed GHCR image
+- [x] Built-in TLS (`-tls-cert`/`-tls-key`) + Compose/Fly/Render/nginx/Caddy/
+      systemd templates
 - [x] Auth hooks: room tokens (`-secret`/`-mint`), Origin allow-list, client cap
 - [x] Single Docker image (multi-stage, distroless) + one-command run
 - [x] Collaborative kanban demo (`demo/kanban.html`)
@@ -55,6 +60,54 @@ code to a hiring manager.
 - [x] Launch write-up drafted (`docs/BLOG.md`) for Show HN / dev.to
 - [ ] **Owner-only steps:** push to GitHub, `npm publish`, deploy hosted demo,
       then track stars / Docker pulls / self-hosting users in the README
+
+---
+
+## Phase 4 — Safe to expose ✅
+
+- [x] Safe-by-default public binds (generated room secret + admin token) and
+      `-insecure` opt-out
+- [x] Per-IP admin limits, failure lockout, CIDR allow-lists, `-trust-proxy`
+- [x] Secret rotation (`-secret-previous`), capability tokens, OIDC/JWT
+- [x] Fuzz targets, threat model, `govulncheck`/CodeQL, Dependabot
+
+## Phase 5 — Observable and measured ✅
+
+- [x] Prometheus histograms (apply latency, frame sizes) and cluster/webhook
+      counters
+- [x] Optional OTLP/HTTP tracing with spans for HTTP, joins, applies, cluster
+- [x] Grafana dashboard, alert rules, SLOs, and a 10k-client load/soak harness
+
+## Phase 6 — Product features ✅
+
+- [x] Sequence/rich-text CRDT (`SequenceText`) and collaborative text demo
+- [x] Typed awareness (presence, cursors, selections) with live cursor overlays
+- [x] Grouped undo/redo that respects newer remote writes
+- [x] Persistence adapters: `localStorage`, IndexedDB, memory, Node file
+- [x] Opt-in state-vector delta sync on reconnect
+- [x] React, Vue, Svelte, vanilla, and Node examples
+- [x] Admin dashboard (rooms, resnapshot, evict) and signed room webhooks
+- [x] Dependency-free Python client with a real-server E2E test
+
+---
+
+## Phase 7 — Launch polish (in progress)
+
+- [x] Docs site (VitePress): quickstart, API reference, guides, self-hosting;
+      builds in CI and deploys via GitHub Pages (owner enables Pages)
+- [x] Frozen protocol v1 compatibility policy (`docs/PROTOCOL_COMPATIBILITY.md`)
+      with contract tests
+- [x] Milestone board (`docs/MILESTONES.md`) and refreshed contribution guide
+- [x] Hosted-demo/status runbook (`docs/LAUNCH.md`) and scheduled demo smoke
+- [ ] Publish docs URL (owner-only: enable Pages and run the Docs workflow)
+- [ ] Hosted demo URL with status page, pinned to a released tag (owner-only)
+- [ ] Publish the refreshed launch post and regenerated metrics (owner-only)
+
+---
+
+Milestones and owner-only release gates are tracked in
+[`MILESTONES.md`](./MILESTONES.md). Protocol changes follow
+[`PROTOCOL_COMPATIBILITY.md`](./PROTOCOL_COMPATIBILITY.md).
 
 ---
 
@@ -72,11 +125,12 @@ Collaborative *text* with character-level merging needs a sequence CRDT
 (RGA / Yjs-style) rather than the LWW-Map. Large effort; only pursue if the
 text-editing demo becomes the headline use case.
 
-A small foundation now exists in `internal/sequence` and `sdk/sequence.js` so
-the model is available for future text-editing work, but it is not yet wired
-into the main application flow. A browser scratchpad prototype in
-`demo/sequence.html` demonstrates the model in a collaborative tab-to-tab
-setting.
+The sequence CRDT is now wired into the product. `sdk/sequence.js` provides the
+rank-ordered RGA core; `sdk/text.js` (`SequenceText`) adds offset operations,
+rich-text marks, and undo-friendly batches; and `demo/sequence.html` is a live
+collaborative editor with remote cursors and a formatted preview. Text edits
+travel over the same room, persistence, delta-sync, and awareness paths as the
+LWW map, so offline editing and reconnect work unchanged.
 
 For horizontal scaling, the repo now also has a rendezvous shard planner and a
 minimal in-process cluster bus. That gives us a concrete room-placement and

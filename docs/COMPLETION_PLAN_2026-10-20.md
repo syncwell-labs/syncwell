@@ -17,6 +17,75 @@ checked and CI proves it.
 
 Sizes: **S** ≤ 1 day, **M** 2–4 days, **L** 1–2 weeks, **XL** > 2 weeks.
 
+## Progress
+
+- **Phase 0 — complete (2026-10-20).** Browser E2E fails when firefox/geckodriver
+  is missing; `make cover-check` enforces per-package coverage floors; CI runs
+  `govulncheck`, CodeQL, and Dependabot; wording fixed; issue/PR templates,
+  `SECURITY.md`, and `CODE_OF_CONDUCT.md` added.
+- **Phase 2 — core complete (2026-10-20).** `-node-id` (required when
+  clustering) and `-node-peers`; `/cluster/event` delivers events to local rooms
+  (creating them on demand) instead of returning 503; two-node HTTP-relay
+  integration test; periodic anti-entropy snapshots heal dropped events; cluster
+  metrics + peer-up. Redis/NATS transport (2.3) and explicit node re-homing
+  (2.5) remain open; the supported topology is full-mesh replication.
+- **Phase 1 — complete (2026-10-20).** `-fsync os|batch|every` (default `batch`,
+  5 ms) with a documented contract; truncation-at-every-byte crash test;
+  `-backup` / `-verify-backup` / `-restore` with a SHA-256 manifest;
+  `make restore-drill` runs in `make all`; `-max-log-bytes` rotation and
+  disk-full behavior documented.
+- **Phase 3 — complete (2026-10-20).** Hand-written TypeScript declarations
+  (generic `Syncwell<State>`, CRDT/sequence types) checked by `tsc` in CI; SDK
+  build emits ESM + CJS + minified IIFE with source maps (`npm run build`);
+  `Release SDK` publishes `syncwell-client` with provenance on `sdk-v*` tags;
+  `Release` runs GoReleaser (3 OS × 2 arch, checksums, SBOM) and pushes a
+  multi-arch GHCR image with provenance/SBOM attestations signed keylessly via
+  cosign; built-in TLS (`-tls-cert`/`-tls-key`, TLS 1.2+, HTTP/2); Compose,
+  Fly, Render, nginx, Caddy, and systemd templates; fixed-parameter benchmark
+  workflow. ACME autocert was deliberately left to the proxy/ACME client (no
+  account storage in the server).
+- **Phase 4 — complete (2026-10-20).** 4.1: public binds without credentials
+  auto-generate a 256-bit room secret and admin token and log them once
+  (`-insecure` opts out with a warning). 4.2: per-IP token buckets, failure
+  lockout, and CIDR allow-lists for `/stats`, `/metrics`, and `/cluster/event`;
+  optional `-trust-proxy` for forwarded client IPs. 4.3: `-secret-previous`
+  verifies old room secrets during rotation (current secret signs). 4.5:
+  fuzz targets for inbound frames, cluster events, token parsing, and canonical
+  JSON, plus `docs/THREAT_MODEL.md`. 4.4: OIDC/JWT verification
+  (`golang-jwt/jwt/v5`) with discovered/overridden JWKS, `iss`/`aud`/`exp`
+  checks, room and capability claims, key refresh/rotation, and fail-closed
+  startup behavior.
+- **Phase 5 — substantially complete (2026-10-20).** 5.1: fixed-bucket
+  Prometheus histograms for register apply latency and inbound/outbound frame
+  size (no new metrics dependency). 5.2: optional OTLP/HTTP tracing with
+  sampling; spans for HTTP requests, WebSocket joins, CRDT applies, and cluster
+  posts. 5.3: importable Grafana dashboard and Prometheus rules. 5.5:
+  `docs/SLO.md` with objectives, error budget, and durability semantics. 5.4:
+  10k clients / 100 rooms load and soak harness (`cmd/loadtest`), 60 s burst and
+  300 s soak published in `docs/LOAD_TEST.md`; run an hours-long soak on the
+  target host before making capacity claims.
+- **Phase 6 — complete (2026-10-20).** 6.1: `sdk/sequence.js` + `sdk/text.js`
+  character-level sequence CRDT wired into `Syncwell`, with a rich-text mark
+  API and a collaborative editor demo. 6.2: typed `Awareness` API for identity,
+  cursors, and selections, with live cursor overlays. 6.3: grouped undo/redo
+  that refuses to clobber newer remote writes. 6.4: `localStorage`, IndexedDB,
+  memory, and Node file persistence adapters. 6.5: opt-in state-vector
+  `hello`/`delta` sync; clients fall back to snapshots. 6.6: React, Vue, Svelte,
+  vanilla, and Node examples. 6.7: authenticated admin dashboard with room list,
+  resnapshot, and evict. 6.8: signed, bounded `room.created` /
+  `room.persisted` / `room.evicted` webhooks. 6.9: dependency-free Python client
+  with a real-server E2E test (`make test-python`).
+- **Phase 7 — local work complete (2026-10-20).** 7.1: VitePress site under
+  `website/` with quickstart, SDK/API guides, self-hosting, protocol/admin
+  reference, project pages, local search, and a GitHub Pages workflow; `make
+  docs-build` runs in CI. 7.3: v1 frozen in `docs/PROTOCOL_COMPATIBILITY.md` with
+  version/unknown-frame contract tests. 7.5: `docs/MILESTONES.md`,
+  `docs/GOVERNANCE.md`, refreshed `CONTRIBUTING.md`, and roadmap links. 7.2/7.4:
+  owner runbook in `docs/LAUNCH.md` plus a scheduled demo smoke workflow; the
+  live demo/status page, release-tag deployment, npm/GHCR publication, metrics
+  refresh, and launch post publication require owner credentials and a released
+  tag.
+
 ---
 
 ## Phase 0 — Guardrails (make "green" mean something)
@@ -86,6 +155,8 @@ and message loss; a killed node's rooms are re-homed; docs explain the topology.
 
 **Acceptance:** `npm i syncwell-client`, `docker run ghcr.io/…`, and a downloaded
 `vX.Y.Z` binary all work from a clean machine; TLS can be enabled without a proxy.
+Satisfied by the workflows and templates above once the first tags are pushed;
+ACME issuance is delegated to a proxy or ACME client.
 
 ---
 
@@ -101,7 +172,9 @@ and message loss; a killed node's rooms are re-homed; docs explain the topology.
 
 **Acceptance:** a public bind with no auth is impossible (or loudly unsafe);
 admin surfaces resist brute force; `govulncheck`/CodeQL clean; threat model
-published.
+published. All Phase 4 items are implemented; OIDC requires provider-side
+claims (`syncwell_room`, `syncwell_caps`) as documented in `docs/DEPLOY.md`.
+
 
 ---
 
@@ -134,20 +207,27 @@ alerts import cleanly; SLOs are stated.
 | 6.8 | Webhooks/events on room milestones (created, persisted, evicted) | **[F]** | M |
 | 6.9 | Polyglot client (Python or Rust) proving "language-agnostic" | **[F]** | XL |
 
-**Acceptance:** each feature ships with a demo, tests, and docs; the SDK is
-typed; the README "language-agnostic" claim is demonstrated by a second client.
+**Acceptance (2026-10-20):**
+- [x] Each feature ships with code, tests, and docs.
+- [x] The SDK is typed (`npm run typecheck` compiles the declarations).
+- [x] `demo/sequence.html` demonstrates sequence editing, cursors, and undo/redo.
+- [x] The admin dashboard and webhook endpoints are covered by Go tests.
+- [x] A second client language is demonstrated: `python/syncwell_client.py` +
+      `python/test_client_e2e.py` (`make test-python`).
+- [x] Delta sync is documented in `docs/PROTOCOL.md`; operator surfaces in
+      `docs/ADMIN_AND_WEBHOOKS.md`.
 
 ---
 
 ## Phase 7 — Docs, demo, launch
 
-| # | Task | Audit | Size |
-| --- | --- | --- | --- |
-| 7.1 | Docs site (VitePress): quickstart, API reference, guides, self-hosting | **[F]** | L |
-| 7.2 | Hosted demo URL with status page; pin to a released tag | **[F]** | M |
-| 7.3 | Protocol spec frozen at v1 with a compatibility policy | **[F]** | S |
-| 7.4 | Regenerate README metrics from the live demo; publish the BLOG post | **[F]** | S |
-| 7.5 | Roadmap/governance: milestone board, contribution guide refresh | **[F]** | S |
+| # | Task | Audit | Size | State |
+| --- | --- | --- | --- | --- |
+| 7.1 | Docs site (VitePress): quickstart, API reference, guides, self-hosting | **[F]** | L | ✅ build + Pages workflow; hosting owner-only |
+| 7.2 | Hosted demo URL with status page; pin to a released tag | **[F]** | M | 🟡 runbook + smoke workflow; deploy owner-only |
+| 7.3 | Protocol spec frozen at v1 with a compatibility policy | **[F]** | S | ✅ frozen + contract tests |
+| 7.4 | Regenerate README metrics from the live demo; publish the BLOG post | **[F]** | S | 🟡 post refreshed; live metrics/publish owner-only |
+| 7.5 | Roadmap/governance: milestone board, contribution guide refresh | **[F]** | S | ✅ complete |
 
 **Acceptance:** docs site live, demo live on a released tag, launch post
 published, and every "still ahead" line in the README resolved.
@@ -182,7 +262,12 @@ Phase 0 ──▶ Phase 1 ──┐
 ## Milestones (suggested)
 
 - **M1 — Trustworthy build:** Phases 0 + 1 ✅
-- **M2 — Installable:** Phases 3 + 7.1 ✅
-- **M3 — Scalable:** Phase 2 ✅
+- **M2 — Installable:** Phase 3 ✅; docs site code/build ✅; release tags and docs
+  hosting are owner-only
+- **M3 — Scalable:** Phase 2 ✅ (full-mesh HTTP relay; Redis/NATS remains stretch)
 - **M4 — Secure & observable:** Phases 4 + 5 ✅
-- **M5 — Feature-complete & launched:** Phases 6 + 7 ✅
+- **M5 — Feature-complete:** Phase 6 ✅
+- **M6 — Launched:** Phase 7 local work ✅; hosted demo, owner deployment, and
+  publication remain
+
+The live board and release gates are in [`MILESTONES.md`](./MILESTONES.md).

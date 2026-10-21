@@ -1,0 +1,38 @@
+name: Benchmark
+
+# Fixed-parameter run for a reproducible number to quote in docs. Results on
+# shared GitHub runners are indicative, not a service-level benchmark.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run benchmark
+        run: |
+          make build VERSION="${GITHUB_REF_NAME:-ci}" COMMIT=${GITHUB_SHA::12}
+          CLIENTS=50 DURATION_MS=3000 INTERVAL_MS=5 make bench
+
+      - name: Show result
+        run: cat docs/BENCHMARKS.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-${{ github.sha }}
+          path: docs/BENCHMARKS.md

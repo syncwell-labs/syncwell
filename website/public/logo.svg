@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Syncwell">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f6bff"/>
+      <stop offset="1" stop-color="#52b7ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#g)"/>
+  <path d="M18 38c0-7 5-12 12-12h3l-4-4 4-4 11 11-11 11-4-4 4-4h-3c-4 0-7 2-7 6s3 6 7 6h7v6h-7c-7 0-12-5-12-12Z" fill="#fff"/>
+  <circle cx="45" cy="19" r="4" fill="#fff" opacity=".9"/>
+</svg>

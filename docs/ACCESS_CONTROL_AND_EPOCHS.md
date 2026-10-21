@@ -38,8 +38,12 @@ Recommended defaults:
 - `admin` is reserved for operations like `/stats`, room inspection, and
   maintenance endpoints.
 
-The server and SDK treat the absence of capabilities as a hard deny instead of
-assuming read/write access.
+The server treats a **missing or malformed** capability claim as a hard deny
+for OIDC/JWT tokens: a token whose caps claim is absent, empty, or unparseable
+is rejected rather than silently granted read/write access. For HMAC room
+tokens minted by the Syncwell token tooling, an empty capability list defaults
+to the standard room set (`read,write,presence`) for backward compatibility —
+mint tokens with explicit capabilities whenever least-privilege matters.
 
 ## Token rotation and revocation
 

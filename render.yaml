@@ -1,0 +1,25 @@
+# Render template. Render injects PORT; the binary honors it when
+# SYNCWELL_ADDR is unset. Persistent disks are mounted as root, so chown the
+# mount once from the Render shell: chown -R 65532:65532 /var/data
+services:
+  - type: web
+    name: syncwell
+    runtime: docker
+    plan: starter
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - key: SYNCWELL_DATA
+        value: /var/data
+      - key: SYNCWELL_FSYNC
+        value: batch
+      - key: SYNCWELL_SECRET
+        generateValue: true
+      - key: SYNCWELL_ADMIN_TOKEN
+        generateValue: true
+      - key: SYNCWELL_ORIGINS
+        sync: false
+    disk:
+      name: syncwell-data
+      mountPath: /var/data
+      sizeGB: 1

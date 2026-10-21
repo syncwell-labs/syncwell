@@ -125,7 +125,7 @@ func TestHubShutdownRejectsNewTrafficAndStopsRooms(t *testing.T) {
 }
 
 func TestRoomRejectsStaleEpochOnOp(t *testing.T) {
-	r := newRoom("room", "", nil, 0, nil, defaultCompactEvery, 0, Limits{}.withDefaults(), nil, nil, "")
+	r := newRoom("room", "", nil, 0, nil, defaultCompactEvery, 0, 0, Limits{}.withDefaults(), nil, nil, "")
 	cl := &Client{
 		id:   "c1",
 		room: r,
@@ -197,7 +197,7 @@ func TestRoomIdleEviction(t *testing.T) {
 }
 
 func TestRoomRejectsNodeMismatchOnOp(t *testing.T) {
-	r := newRoom("room", "", nil, 0, nil, defaultCompactEvery, 0, Limits{}.withDefaults(), nil, nil, "")
+	r := newRoom("room", "", nil, 0, nil, defaultCompactEvery, 0, 0, Limits{}.withDefaults(), nil, nil, "")
 	cl := &Client{
 		id:   "c1",
 		room: r,
@@ -262,7 +262,7 @@ func TestRoomRejectsStaleEpochOnMergeAndPresence(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newRoom("room", "", nil, 0, nil, defaultCompactEvery, 0, Limits{}.withDefaults(), nil, nil, "")
+			r := newRoom("room", "", nil, 0, nil, defaultCompactEvery, 0, 0, Limits{}.withDefaults(), nil, nil, "")
 			cl := &Client{
 				id:   "c1",
 				room: r,
@@ -291,5 +291,111 @@ func TestRoomRejectsStaleEpochOnMergeAndPresence(t *testing.T) {
 				t.Fatal("did not receive stale epoch error")
 			}
 		})
+	}
+}
+
+type sizedStore struct {
+	appended  int
+	compacted int
+	size      int64
+}
+
+func (s *sizedStore) Load(string) (map[string]crdt.Register, error) {
+	return map[string]crdt.Register{}, nil
+}
+func (s *sizedStore) Append(string, store.Record) error {
+	s.appended++
+	s.size += 100
+	return nil
+}
+func (s *sizedStore) Compact(string, map[string]crdt.Register) error {
+	s.compacted++
+	s.size = 64
+	return nil
+}
+func (s *sizedStore) Close() error         { return nil }
+func (s *sizedStore) LogSize(string) int64 { return s.size }
+
+func TestRoomCompactsWhenLogExceedsCap(t *testing.T) {
+	st := &sizedStore{}
+	r := testRoom(st)
+	r.compactEvery = 1 << 30
+	r.maxLogBytes = 200
+
+	r.applyAndPersist("k", serverReg("a", 1, "n"))
+	if st.compacted != 0 {
+		t.Fatalf("compacted below cap: %d", st.compacted)
+	}
+	r.applyAndPersist("k", serverReg("b", 2, "n"))
+	if st.compacted != 1 {
+		t.Fatalf("log at cap was not compacted: %d", st.compacted)
+	}
+	if r.opsSinceCompact != 0 {
+		t.Fatalf("opsSinceCompact = %d after compaction, want 0", r.opsSinceCompact)
+	}
+}
+
+func readOutbound(t *testing.T, cl *Client) Outbound {
+	t.Helper()
+	select {
+	case raw, ok := <-cl.send:
+		if !ok {
+			t.Fatal("client channel closed")
+		}
+		var msg Outbound
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("bad outbound frame: %v", err)
+		}
+		return msg
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for outbound frame")
+		return Outbound{}
+	}
+}
+
+func TestHelloSendsOnlyRegistersNewerThanVector(t *testing.T) {
+	r := newRoom("room", "", nil, 0, nil, defaultCompactEvery, 0, 0, Limits{}.withDefaults(), nil, nil, "")
+	r.doc.ApplyRegister("a", serverReg("1", 1, "A"))
+
+	full := &Client{
+		id:     "full",
+		room:   r,
+		send:   make(chan []byte, 8),
+		claims: TokenClaims{Caps: map[string]bool{CapRead: true, CapWrite: true}},
+	}
+	r.cmds <- command{kind: "join", client: full}
+	if msg := readOutbound(t, full); msg.Type != msgSnapshot {
+		t.Fatalf("legacy client expected snapshot, got %q", msg.Type)
+	}
+
+	delta := &Client{
+		id:     "delta",
+		room:   r,
+		send:   make(chan []byte, 8),
+		claims: TokenClaims{Caps: map[string]bool{CapRead: true, CapWrite: true}},
+		delta:  true,
+	}
+	r.cmds <- command{kind: "join", client: delta}
+	select {
+	case raw := <-delta.send:
+		t.Fatalf("delta client should wait for hello, got %s", raw)
+	case <-time.After(25 * time.Millisecond):
+	}
+	r.cmds <- command{kind: "hello", client: delta, in: Inbound{Type: "hello", Epoch: 1, Vector: map[string]crdt.Timestamp{}}}
+	msg := readOutbound(t, delta)
+	if msg.Type != msgDelta || len(msg.State) != 1 {
+		t.Fatalf("expected one-key delta, got %+v", msg)
+	}
+	if _, ok := msg.State["a"]; !ok {
+		t.Fatal("delta omitted a register the client lacks")
+	}
+
+	// A second hello that already knows the register gets an empty delta.
+	r.cmds <- command{kind: "hello", client: delta, in: Inbound{Type: "hello", Epoch: 1, Vector: map[string]crdt.Timestamp{
+		"a": {Counter: 1, Node: "A"},
+	}}}
+	msg = readOutbound(t, delta)
+	if msg.Type != msgDelta || len(msg.State) != 0 {
+		t.Fatalf("expected empty delta, got %+v", msg)
 	}
 }

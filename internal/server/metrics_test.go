@@ -39,6 +39,10 @@ func TestServeMetricsExposesRoomCounters(t *testing.T) {
 		"syncwell_clients_total 0",
 		"syncwell_room_clients{room=\"roomA\"} 0",
 		"syncwell_room_low_water{room=\"roomA\"} 0",
+		"syncwell_apply_duration_seconds_count 0",
+		"syncwell_apply_duration_seconds_bucket{le=\"+Inf\"} 0",
+		"syncwell_inbound_frame_bytes_count 0",
+		"syncwell_outbound_frame_bytes_count 0",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics output missing %q:\n%s", want, body)

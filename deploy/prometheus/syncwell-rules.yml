@@ -1,0 +1,107 @@
+groups:
+  - name: syncwell-availability
+    rules:
+      - alert: SyncwellTargetDown
+        expr: up{job="syncwell"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Syncwell target is not scrapeable
+          description: Prometheus has failed to scrape {{ $labels.instance }} for 2 minutes.
+
+      - alert: SyncwellNoRooms
+        expr: sum(syncwell_rooms) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: No active Syncwell rooms
+          description: The service is up but has had no live rooms for 30 minutes. Ignore if the deployment is idle.
+
+  - name: syncwell-latency
+    rules:
+      - alert: SyncwellApplyLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(syncwell_apply_duration_seconds_bucket[5m])) by (le)) > 0.025
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Register apply p95 above 25 ms
+          description: Merge/persist latency is elevated. Check disk fsync latency and room size.
+
+      - alert: SyncwellApplyLatencyCritical
+        expr: histogram_quantile(0.99, sum(rate(syncwell_apply_duration_seconds_bucket[5m])) by (le)) > 0.25
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Register apply p99 above 250 ms
+          description: Writes are stalling. Check the data volume, fsync mode, and host I/O.
+
+      - alert: SyncwellFrameSizeHigh
+        expr: histogram_quantile(0.99, sum(rate(syncwell_outbound_frame_bytes_bucket[5m])) by (le)) > 524288
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbound websocket frames are very large
+          description: p99 outbound frame size exceeds 512 KiB. Check client merge payloads and state size.
+
+  - name: syncwell-correctness
+    rules:
+      - alert: SyncwellLowWaterStuck
+        expr: max by (room) (syncwell_room_low_water) == 0 and on (room) max by (room) (syncwell_room_clients) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Room {{ $labels.room }} is not advancing its GC low-water mark
+          description: Clients are connected but not acknowledging. Tombstones will accumulate.
+
+      - alert: SyncwellTombstoneGrowth
+        expr: increase(syncwell_tombstones_total[30m]) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Tombstones are growing quickly
+          description: A room may have stalled acknowledgements or an aggressive delete workload.
+
+  - name: syncwell-cluster
+    rules:
+      - alert: SyncwellClusterPeerDown
+        expr: syncwell_cluster_peer_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Cluster peer {{ $labels.peer }} is unreachable
+          description: Writes still apply locally and heal via anti-entropy, but replication is degraded.
+
+      - alert: SyncwellClusterRelayErrors
+        expr: sum(rate(syncwell_cluster_relay_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Cluster relay posts are failing
+          description: Check peer auth, TLS, DNS, and connectivity.
+
+      - alert: SyncwellClusterDrops
+        expr: sum(rate(syncwell_cluster_relay_dropped_total[5m])) > 0 or sum(rate(syncwell_cluster_events_dropped_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Cluster events are being dropped
+          description: A relay queue or room command queue is saturated. Anti-entropy will reconcile eventually.
+
+      - alert: SyncwellClusterRelayBacklog
+        expr: sum(syncwell_cluster_relay_inflight) > 128
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Sustained cluster relay backlog
+          description: Peers are slow or unreachable; outbound events are accumulating.

@@ -7,3 +7,9 @@ data
 node_modules
 docs/BENCHMARKS.md
 PLAN.md
+sdk/node_modules
+sdk/dist
+/dist/
+
+website/.vitepress/dist
+website/.vitepress/cache

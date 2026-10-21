@@ -23,3 +23,10 @@ CLIENTS=50 DURATION_MS=3000 INTERVAL_MS=5 make bench
 every 5 ms; the other 49 clients timestamp each
 received update against its publish time (same process clock). Latency is the
 publish→receive delta; throughput is delivered messages/second.
+
+**Reproducing:** the `Benchmark` workflow runs exactly these parameters on an
+`ubuntu-latest` runner (2 vCPU, Node 22, Go 1.23). Runners are shared, so
+latency/throughput vary between runs — use the numbers for order-of-magnitude
+comparisons only. The committed copy below was produced by a tagged `bench`
+workflow run (which also uploads the generated file as an artifact); run
+`make bench` locally to regenerate this page.

@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a capability or improvement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you unable to do today, and who is affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Syncwell do? Include protocol/API changes if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other designs you evaluated.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CRDT / convergence
+        - Persistence / durability
+        - Cluster / scaling
+        - Auth / security
+        - Client SDK (JS)
+        - Observability / operations
+        - Docs / tooling
+        - Other
+    validations:
+      required: true

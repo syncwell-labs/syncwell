@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -250,4 +251,279 @@ func TestClusterOpIsPersistedOnReceiver(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("cluster op was not persisted on the receiving node")
+}
+
+func TestClusterConfigValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{"single node", Config{NodeID: ""}, false},
+		{"single node with secret", Config{NodeID: "", Secret: "s"}, false},
+		{"cluster without node id", Config{ClusterPeers: []string{"http://peer"}}, true},
+		{"cluster with default node id", Config{NodeID: "local", ClusterPeers: []string{"http://peer"}}, true},
+		{"cluster with secret but no admin token", Config{NodeID: "a", Secret: "s", ClusterPeers: []string{"http://peer"}}, true},
+		{"cluster valid", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"http://peer"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestServeClusterEventCreatesRoomWithoutBus(t *testing.T) {
+	h := NewHub(Config{NodeID: "node-b"})
+	body := `{"room":"fresh","kind":"op","from":"node-a","epoch":1,"key":"title","register":{"v":"hello","t":{"c":1,"n":"node-a"}}}`
+	rr := httptest.NewRecorder()
+	h.ServeClusterEvent(rr, httptest.NewRequest(http.MethodPost, "/cluster/event", strings.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	r, err := h.room("fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &Client{
+		id:     "reader",
+		room:   r,
+		send:   make(chan []byte, 4),
+		claims: TokenClaims{Caps: map[string]bool{CapRead: true}},
+	}
+	r.cmds <- command{kind: "join", client: reader}
+	select {
+	case msg := <-reader.send:
+		var out Outbound
+		if err := json.Unmarshal(msg, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Type != msgSnapshot {
+			t.Fatalf("expected snapshot, got %q", out.Type)
+		}
+		reg, ok := out.State["title"]
+		if !ok || string(reg.Value) != `"hello"` {
+			t.Fatalf("relayed op missing from snapshot: %+v", out.State)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cluster event did not reach the created room")
+	}
+}
+
+func TestServeClusterEventIgnoresOwnEvents(t *testing.T) {
+	h := NewHub(Config{NodeID: "node-a"})
+	body := `{"room":"demo","kind":"op","from":"node-a","key":"title","register":{"v":"\"x\"","t":{"c":1,"n":"node-a"}}}`
+	rr := httptest.NewRecorder()
+	h.ServeClusterEvent(rr, httptest.NewRequest(http.MethodPost, "/cluster/event", strings.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected idempotent 202, got %d", rr.Code)
+	}
+	h.mu.Lock()
+	rooms := len(h.rooms)
+	h.mu.Unlock()
+	if rooms != 0 {
+		t.Fatalf("self-originated event created %d room(s)", rooms)
+	}
+}
+
+// TestTwoNodeHTTPRelayConverges exercises the real path: node A writes, the
+// relay POSTs to node B's /cluster/event, and B applies + persists the write.
+func TestTwoNodeHTTPRelayConverges(t *testing.T) {
+	stB := &recordingStore{appended: map[string]crdt.Register{}}
+
+	var hubA, hubB *Hub
+	handler := func(h **Hub) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			(*h).ServeClusterEvent(w, r)
+		})
+	}
+	srvA := httptest.NewServer(handler(&hubA))
+	defer srvA.Close()
+	srvB := httptest.NewServer(handler(&hubB))
+	defer srvB.Close()
+
+	hubA = NewHub(Config{
+		NodeID:       "node-a",
+		AdminToken:   "cluster-secret",
+		ClusterPeers: []string{srvB.URL},
+		ClusterPath:  "/cluster/event",
+		ClusterHTTP:  srvB.Client(),
+	})
+	hubB = NewHub(Config{
+		NodeID:       "node-b",
+		AdminToken:   "cluster-secret",
+		ClusterPeers: []string{srvA.URL},
+		ClusterPath:  "/cluster/event",
+		ClusterHTTP:  srvA.Client(),
+		Store:        stB,
+	})
+
+	rA, err := hubA.room("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rB, err := hubB.room("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader := &Client{
+		id:     "reader",
+		room:   rB,
+		send:   make(chan []byte, 8),
+		claims: TokenClaims{Caps: map[string]bool{CapRead: true}},
+	}
+	rB.cmds <- command{kind: "join", client: reader}
+	<-reader.send
+
+	writer := &Client{
+		id:     "writer",
+		room:   rA,
+		send:   make(chan []byte, 8),
+		claims: TokenClaims{Caps: map[string]bool{CapRead: true, CapWrite: true}},
+	}
+	rA.cmds <- command{kind: "join", client: writer}
+	<-writer.send
+
+	rA.cmds <- command{
+		kind:   "op",
+		client: writer,
+		in: Inbound{
+			Type:     "op",
+			Epoch:    rA.epoch,
+			Key:      "title",
+			Register: &crdt.Register{Value: []byte(`"from-a"`), TS: crdt.Timestamp{Counter: 5, Node: "client-a"}},
+		},
+	}
+
+	select {
+	case msg := <-reader.send:
+		if !strings.Contains(string(msg), `"type":"op"`) || !strings.Contains(string(msg), `"title"`) {
+			t.Fatalf("unexpected relayed frame: %s", msg)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("node B did not receive the op through the HTTP relay")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stB.mu.Lock()
+		reg, ok := stB.appended["title"]
+		stB.mu.Unlock()
+		if ok {
+			if string(reg.Value) != `"from-a"` {
+				t.Fatalf("persisted wrong value: %s", reg.Value)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("node B did not persist the relayed op")
+}
+
+// TestAntiEntropyHealsMissedEvents simulates a dropped relay event and proves
+// the periodic full-state push reconciles it without any client action.
+func TestAntiEntropyHealsMissedEvents(t *testing.T) {
+	var hubB *Hub
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hubB.ServeClusterEvent(w, r)
+	}))
+	defer srvB.Close()
+
+	hubB = NewHub(Config{NodeID: "node-b", AdminToken: "tok"})
+	hubA := NewHub(Config{
+		NodeID:       "node-a",
+		AdminToken:   "tok",
+		ClusterPeers: []string{srvB.URL},
+		ClusterPath:  "/cluster/event",
+		ClusterHTTP:  srvB.Client(),
+	})
+	dropRelay := &togglableRelay{inner: hubA.relay}
+	hubA.relay = dropRelay // used by antiEntropyOnce; rooms copy it at creation
+	rA, err := hubA.room("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &Client{
+		id:     "writer",
+		room:   rA,
+		send:   make(chan []byte, 8),
+		claims: TokenClaims{Caps: map[string]bool{CapRead: true, CapWrite: true}},
+	}
+	rA.cmds <- command{kind: "join", client: writer}
+	<-writer.send
+
+	// Drop every event from this write, as a network partition or a saturated
+	// relay queue would.
+	dropRelay.drop.Store(true)
+	rA.cmds <- command{
+		kind:   "op",
+		client: writer,
+		in: Inbound{
+			Type:     "op",
+			Epoch:    rA.epoch,
+			Key:      "title",
+			Register: &crdt.Register{Value: []byte(`"healed"`), TS: crdt.Timestamp{Counter: 9, Node: "client-a"}},
+		},
+	}
+	<-writer.send // local broadcast
+
+	hubB.mu.Lock()
+	_, exists := hubB.rooms["demo"]
+	hubB.mu.Unlock()
+	if exists {
+		t.Fatal("node B should not know about the room before anti-entropy")
+	}
+
+	// Restore the relay and run one anti-entropy pass.
+	dropRelay.drop.Store(false)
+	hubA.antiEntropyOnce()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stats := hubB.Stats()
+		if s, ok := stats["demo"]; ok && s.Live >= 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("anti-entropy did not reconcile the missed write")
+}
+
+// togglableRelay drops events while enabled, modelling a partition.
+type togglableRelay struct {
+	inner ClusterRelay
+	drop  atomic.Bool
+}
+
+func (r *togglableRelay) Publish(ev ClusterEvent) {
+	if r.drop.Load() {
+		return
+	}
+	r.inner.Publish(ev)
+}
+
+func TestServeMetricsIncludesClusterState(t *testing.T) {
+	relay := NewHTTPClusterRelay([]string{"http://127.0.0.1:1"}, "/cluster/event", nil)
+	h := NewHub(Config{NodeID: "node-x"})
+	h.relay = relay
+
+	rr := httptest.NewRecorder()
+	h.ServeMetrics(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rr.Body.String()
+	for _, want := range []string{
+		`syncwell_cluster_node_info{node="node-x"} 1`,
+		"syncwell_cluster_events_ingested_total 0",
+		"syncwell_cluster_events_dropped_total 0",
+		"syncwell_cluster_relay_posts_total 0",
+		`syncwell_cluster_peer_up{peer="http://127.0.0.1:1"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q in:\n%s", want, body)
+		}
+	}
 }

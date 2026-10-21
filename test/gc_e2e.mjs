@@ -17,7 +17,7 @@ const stats = async (room) => (await (await fetch(`http://localhost:${PORT}/stat
 
 async function main() {
   // Low compaction threshold so maintenance (GC) runs frequently.
-  const srv = spawn(BIN, ["-addr", `:${PORT}`, "-compact", "8"], { stdio: "ignore" });
+  const srv = spawn(BIN, ["-addr", `127.0.0.1:${PORT}`, "-compact", "8"], { stdio: "ignore" });
   let failed = null;
   try {
     await waitHealthy(PORT);

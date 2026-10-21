@@ -1,0 +1,37 @@
+# Self-host template: `cp .env.example .env`, set the two secrets, then
+# `docker compose up -d`. The image is distroless and runs as uid 65532, so the
+# init service chowns the named volume once before the server starts.
+# Mint a room token for the demo pages with the same secret:
+#   docker compose run --rm syncwell -mint demo
+# then open http://localhost:8080/?token=<token>
+services:
+  init:
+    image: busybox:stable
+    command: ["sh", "-c", "chown -R 65532:65532 /data"]
+    volumes:
+      - syncwell-data:/data
+    restart: "no"
+
+  syncwell:
+    build: .
+    image: ghcr.io/nil-vaghani/syncwell:latest
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      SYNCWELL_DATA: /data
+      SYNCWELL_FSYNC: ${SYNCWELL_FSYNC:-batch}
+      SYNCWELL_SECRET: ${SYNCWELL_SECRET:?set SYNCWELL_SECRET in .env}
+      SYNCWELL_ADMIN_TOKEN: ${SYNCWELL_ADMIN_TOKEN:?set SYNCWELL_ADMIN_TOKEN in .env}
+      SYNCWELL_ORIGINS: ${SYNCWELL_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+      SYNCWELL_MAX_LOG_BYTES: ${SYNCWELL_MAX_LOG_BYTES:-67108864}
+      SYNCWELL_MAX_ROOMS: ${SYNCWELL_MAX_ROOMS:-0}
+    volumes:
+      - syncwell-data:/data
+    restart: unless-stopped
+    stop_grace_period: 10s
+
+volumes:
+  syncwell-data:

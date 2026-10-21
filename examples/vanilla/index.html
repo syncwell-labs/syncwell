@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell vanilla example</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+      input, textarea, button { font: inherit; }
+      input, textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+      #status { color: #555; }
+    </style>
+  </head>
+  <body>
+    <h1>Syncwell vanilla</h1>
+    <p id="status">connecting…</p>
+    <label>Title <input id="title" /></label>
+    <label>Notes <textarea id="notes" rows="6"></textarea></label>
+    <p><button id="undo">Undo</button> <button id="redo">Redo</button></p>
+
+    <script type="module">
+      import { Syncwell } from "/sdk/syncwell.js";
+
+      const sw = new Syncwell(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`, "vanilla-example", {
+        clientId: localStorage.getItem("syncwell-vanilla-id") || crypto.randomUUID(),
+        persist: true,
+      });
+      const title = document.getElementById("title");
+      const notes = document.getElementById("notes");
+      const status = document.getElementById("status");
+
+      const render = (live) => {
+        if (document.activeElement !== title) title.value = live.title || "";
+        if (document.activeElement !== notes) notes.value = live.notes || "";
+      };
+      sw.on("open", () => (status.textContent = "live"));
+      sw.on("close", () => (status.textContent = "offline — edits are saved locally"));
+      sw.on("change", render);
+      sw.ready.then(() => {
+        render(sw.live());
+        sw.connect();
+      });
+
+      title.addEventListener("input", () => sw.set("title", title.value));
+      notes.addEventListener("input", () => sw.set("notes", notes.value));
+      document.getElementById("undo").addEventListener("click", () => sw.undo());
+      document.getElementById("redo").addEventListener("click", () => sw.redo());
+    </script>
+  </body>
+</html>

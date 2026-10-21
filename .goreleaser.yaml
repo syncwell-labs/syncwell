@@ -1,0 +1,68 @@
+version: 2
+
+project_name: syncwell
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./... -count=1
+
+builds:
+  - id: syncwell
+    main: ./cmd/syncwell
+    binary: syncwell
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X syncwell/internal/version.Version={{ .Version }}
+      - -X syncwell/internal/version.Commit={{ .Commit }}
+      - -X syncwell/internal/version.Date={{ .Date }}
+
+archives:
+  - id: release
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - docs/OPERATIONS.md
+      - docs/DEPLOY.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    **Container:** `ghcr.io/nil-vaghani/syncwell:{{ .Version }}` (multi-arch, signed)
+    **SDK:** `npm install syncwell-client@{{ .Version }}` (published separately on `sdk-v*` tags)

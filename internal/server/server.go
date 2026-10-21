@@ -3,11 +3,17 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"syncwell/internal/crdt"
 
@@ -116,10 +122,69 @@ func (h *Hub) ServeMetrics(w http.ResponseWriter, req *http.Request) {
 		fmt.Fprintf(w, "syncwell_room_tombstones{room=%q} %d\n", room, s.Tombstones)
 		fmt.Fprintf(w, "syncwell_room_low_water{room=%q} %d\n", room, s.LowWater)
 	}
+
+	h.metrics.applyDuration.write(w, "syncwell_apply_duration_seconds", "Time to merge and persist one register (local, merge, or cluster write)")
+	h.metrics.inboundFrameBytes.write(w, "syncwell_inbound_frame_bytes", "WebSocket message size received from clients")
+	h.metrics.outboundFrameBytes.write(w, "syncwell_outbound_frame_bytes", "WebSocket message size sent to each client")
+
+	fmt.Fprintln(w, "# HELP syncwell_cluster_node_info Identity of this node (always 1)")
+	fmt.Fprintln(w, "# TYPE syncwell_cluster_node_info gauge")
+	fmt.Fprintf(w, "syncwell_cluster_node_info{node=%q} 1\n", h.nodeID)
+	fmt.Fprintln(w, "# HELP syncwell_cluster_events_ingested_total Peer events delivered to local rooms")
+	fmt.Fprintln(w, "# TYPE syncwell_cluster_events_ingested_total counter")
+	fmt.Fprintf(w, "syncwell_cluster_events_ingested_total %d\n", h.clusterIngested.Load())
+	fmt.Fprintln(w, "# HELP syncwell_cluster_events_dropped_total Peer events dropped (room cap, closed, or queue full)")
+	fmt.Fprintln(w, "# TYPE syncwell_cluster_events_dropped_total counter")
+	fmt.Fprintf(w, "syncwell_cluster_events_dropped_total %d\n", h.clusterDropped.Load())
+
+	type relayMetrics interface {
+		Metrics() (posted, dropped, errs, inflight uint64)
+	}
+	if rm, ok := h.relay.(relayMetrics); ok {
+		posted, dropped, errs, inflight := rm.Metrics()
+		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_posts_total Successful posts to peers")
+		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_posts_total counter")
+		fmt.Fprintf(w, "syncwell_cluster_relay_posts_total %d\n", posted)
+		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_errors_total Failed peer posts")
+		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_errors_total counter")
+		fmt.Fprintf(w, "syncwell_cluster_relay_errors_total %d\n", errs)
+		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_dropped_total Events dropped before delivery (queue full)")
+		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_dropped_total counter")
+		fmt.Fprintf(w, "syncwell_cluster_relay_dropped_total %d\n", dropped)
+		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_inflight Events queued but not yet posted (lag proxy)")
+		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_inflight gauge")
+		fmt.Fprintf(w, "syncwell_cluster_relay_inflight %d\n", inflight)
+	}
+
+	if h.webhooks != nil {
+		delivered, failed, dropped := h.webhooks.Metrics()
+		fmt.Fprintln(w, "# HELP syncwell_webhook_delivered_total Successful webhook deliveries")
+		fmt.Fprintln(w, "# TYPE syncwell_webhook_delivered_total counter")
+		fmt.Fprintf(w, "syncwell_webhook_delivered_total %d\n", delivered)
+		fmt.Fprintln(w, "# HELP syncwell_webhook_failed_total Failed webhook deliveries")
+		fmt.Fprintln(w, "# TYPE syncwell_webhook_failed_total counter")
+		fmt.Fprintf(w, "syncwell_webhook_failed_total %d\n", failed)
+		fmt.Fprintln(w, "# HELP syncwell_webhook_dropped_total Events dropped because the queue was full")
+		fmt.Fprintln(w, "# TYPE syncwell_webhook_dropped_total counter")
+		fmt.Fprintf(w, "syncwell_webhook_dropped_total %d\n", dropped)
+	}
+
+	type peerStatus interface{ PeerUp() map[string]bool }
+	if ps, ok := h.relay.(peerStatus); ok {
+		fmt.Fprintln(w, "# HELP syncwell_cluster_peer_up Whether the last post to each peer succeeded")
+		fmt.Fprintln(w, "# TYPE syncwell_cluster_peer_up gauge")
+		for peer, up := range ps.PeerUp() {
+			v := 0
+			if up {
+				v = 1
+			}
+			fmt.Fprintf(w, "syncwell_cluster_peer_up{peer=%q} %d\n", peer, v)
+		}
+	}
 }
 
 // ServeClusterEvent ingests a cluster-event POST from a peer process and
-// republishes it to the local in-process bus.
+// delivers it to the matching local room, creating that room if necessary.
 func (h *Hub) ServeClusterEvent(w http.ResponseWriter, req *http.Request) {
 	if !h.Ready() {
 		http.Error(w, "shutting down", http.StatusServiceUnavailable)
@@ -135,10 +200,6 @@ func (h *Hub) ServeClusterEvent(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if h.bus == nil {
-		http.Error(w, "cluster bus unavailable", http.StatusServiceUnavailable)
-		return
-	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -150,8 +211,42 @@ func (h *Hub) ServeClusterEvent(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	h.bus.Publish(ev)
+	if err := h.ingestClusterEvent(ev); err != nil {
+		LogEvent("cluster_ingest_error", map[string]any{"room": ev.Room, "kind": ev.Kind, "from": ev.From, "error": err.Error()})
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// errClusterQueueFull means a room's command queue is saturated; the event is
+// dropped rather than blocking the peer (anti-entropy will reconcile later).
+var errClusterQueueFull = errors.New("cluster event queue full")
+
+// ingestClusterEvent delivers a peer event to the local room, creating the room
+// if needed so state replicates even before a local client joins. Events
+// originated by this node are ignored: they were applied when the client wrote
+// them, and applying them twice would duplicate presence fan-out.
+func (h *Hub) ingestClusterEvent(ev ClusterEvent) error {
+	if ev.From == h.nodeID {
+		return nil
+	}
+	r, err := h.room(ev.Room)
+	if err != nil {
+		h.clusterDropped.Add(1)
+		return err
+	}
+	select {
+	case r.cmds <- command{kind: "cluster", cluster: &ev}:
+		h.clusterIngested.Add(1)
+		return nil
+	case <-r.done:
+		h.clusterDropped.Add(1)
+		return errors.New("room closed")
+	default:
+		h.clusterDropped.Add(1)
+		return errClusterQueueFull
+	}
 }
 
 // ServeReady reports whether the hub is still accepting realtime traffic.
@@ -163,11 +258,37 @@ func (h *Hub) ServeReady(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (h *Hub) adminAllowed(req *http.Request) bool {
-	if h.cfg.AdminToken == "" {
-		if h.cfg.Secret == "" {
-			return true
+// verifyToken accepts the current secret and any previous secrets kept during a
+// rotation window, so tokens minted before a rotation keep working until they
+// expire.
+func (h *Hub) verifyToken(room, token string, now int64) (TokenClaims, bool) {
+	if token == "" {
+		return TokenClaims{}, false
+	}
+	if h.cfg.Secret != "" {
+		if claims, ok := VerifyAccessToken(h.cfg.Secret, room, token, now); ok {
+			return claims, true
 		}
+		for _, prev := range h.cfg.PreviousSecrets {
+			if prev == "" || prev == h.cfg.Secret {
+				continue
+			}
+			if claims, ok := VerifyAccessToken(prev, room, token, now); ok {
+				return claims, true
+			}
+		}
+	}
+	if h.cfg.OIDC != nil {
+		if claims, ok := h.cfg.OIDC.Verify(token, room, time.Unix(now, 0)); ok {
+			return claims, true
+		}
+	}
+	return TokenClaims{}, false
+}
+
+func (h *Hub) adminAllowed(req *http.Request) bool {
+	if h.cfg.AdminToken == "" && h.cfg.Secret == "" && h.cfg.OIDC == nil {
+		return true
 	}
 	got := ""
 	if auth := req.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
@@ -175,8 +296,8 @@ func (h *Hub) adminAllowed(req *http.Request) bool {
 	}
 	// Tokens are accepted only via the Authorization header. Query-string
 	// credentials leak into access logs, proxies, and browser history.
-	if got != "" && h.cfg.Secret != "" {
-		claims, ok := VerifyAccessToken(h.cfg.Secret, "*", got, time.Now().Unix())
+	if got != "" && (h.cfg.Secret != "" || h.cfg.OIDC != nil) {
+		claims, ok := h.verifyToken("*", got, time.Now().Unix())
 		if ok && claims.Can(CapAdmin) {
 			if _, revoked := h.cfg.RevokedJTIs[claims.JTI]; revoked && claims.JTI != "" {
 				return false
@@ -205,6 +326,11 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "room id too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	_, span := otel.Tracer("syncwell").Start(req.Context(), "ws.join",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(attribute.String("syncwell.room", roomID)),
+	)
+	defer span.End()
 	if h.planner != nil {
 		owner := h.planner.Owner(roomID)
 		if owner != "" && owner != h.nodeID {
@@ -222,11 +348,11 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
 	}
-	// Room token (when a secret is configured). Open dev mode gets full caps.
+	// Room token (when a secret or OIDC is configured). Open dev mode gets full caps.
 	var claims TokenClaims
-	if h.cfg.Secret != "" {
+	if h.cfg.Secret != "" || h.cfg.OIDC != nil {
 		var ok bool
-		claims, ok = VerifyAccessToken(h.cfg.Secret, roomID, req.URL.Query().Get("token"), time.Now().Unix())
+		claims, ok = h.verifyToken(roomID, req.URL.Query().Get("token"), time.Now().Unix())
 		if !ok || !claims.Can(CapRead) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -253,10 +379,19 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 	}
 	conn, err := upgrader.Upgrade(w, req, nil)
 	if err != nil {
+		span.SetStatus(codes.Error, "upgrade failed")
 		LogEvent("ws_upgrade_error", map[string]any{"error": err.Error(), "room": roomID})
 		return
 	}
-	client := &Client{id: nextClientID(), room: room, send: make(chan []byte, 64), claims: claims, node: nodeID}
+	span.SetAttributes(attribute.Int("syncwell.caps", len(claims.Caps)))
+	client := &Client{
+		id:     nextClientID(),
+		room:   room,
+		send:   make(chan []byte, 64),
+		claims: claims,
+		node:   nodeID,
+		delta:  req.URL.Query().Get("delta") == "1",
+	}
 	LogEvent("ws_join", map[string]any{
 		"room":      roomID,
 		"client":    client.id,
@@ -311,8 +446,11 @@ func (c *Client) readPump(conn *websocket.Conn) {
 			)
 			return
 		}
+		if c.room.hub != nil && c.room.hub.metrics != nil {
+			c.room.hub.metrics.inboundFrameBytes.observe(float64(len(data)))
+		}
 		switch in.Type {
-		case "op", "merge":
+		case "op", "merge", "hello":
 			c.room.cmds <- command{kind: in.Type, client: c, in: in}
 		case "presence", "ack":
 			c.room.cmds <- command{kind: in.Type, client: c, in: in}
@@ -356,6 +494,30 @@ func validateInbound(in Inbound, limits Limits) error {
 		}
 		return validateRegister(*in.Register, limits)
 	case "merge":
+		if len(in.State) > limits.MaxStateEntries {
+			return errProtocol("state too large")
+		}
+		for key, reg := range in.State {
+			if key == "" || len(key) > limits.MaxKeyBytes {
+				return errProtocol("bad key")
+			}
+			if err := validateRegister(reg, limits); err != nil {
+				return err
+			}
+		}
+		return nil
+	case "hello":
+		if len(in.Vector) > limits.MaxStateEntries {
+			return errProtocol("vector too large")
+		}
+		for key, ts := range in.Vector {
+			if key == "" || len(key) > limits.MaxKeyBytes {
+				return errProtocol("bad key")
+			}
+			if ts.Node == "" || len(ts.Node) > limits.MaxNodeIDBytes {
+				return errProtocol("bad node")
+			}
+		}
 		if len(in.State) > limits.MaxStateEntries {
 			return errProtocol("state too large")
 		}

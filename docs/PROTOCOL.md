@@ -1,9 +1,14 @@
-# Syncwell Wire Protocol (v0.2, Phase 2)
+# Syncwell Wire Protocol (v1)
+
+> **Frozen contract.** Wire protocol v1 was frozen on 2026-10-20. Additive
+> changes are allowed; breaking changes require protocol v2 and a major release.
+> Read [PROTOCOL_COMPATIBILITY.md](./PROTOCOL_COMPATIBILITY.md) before changing a
+> frame, merge rule, or limit.
 
 Transport: **WebSocket**, one connection per client. Endpoint:
 
 ```
-GET /ws?room=<ROOM_ID>[&token=<TOKEN>]   (ROOM_ID defaults to "default")
+GET /ws?room=<ROOM_ID>[&token=<TOKEN>][&delta=1]   (ROOM_ID defaults to "default")
 ```
 
 All frames are **JSON text** messages. The protocol is intentionally tiny.
@@ -62,6 +67,31 @@ state, broadcasts any new winners to the other clients, and replies to the
 sender with a fresh `snapshot` so it converges with everything it missed. A
 fresh client with no local state skips this frame.
 
+### `hello` — state-vector delta sync (opt-in)
+Add `?delta=1` to the WebSocket URL. The server then waits for this frame
+instead of sending a full snapshot on join:
+
+```json
+{
+  "type": "hello",
+  "vector": {
+    "title": { "c": 8, "n": "c-1a2b" },
+    "old":   { "c": 3, "n": "c-1a2b" }
+  },
+  "state": {
+    "offline-only": { "v": "edited while away", "t": { "c": 9, "n": "c-1a2b" } }
+  }
+}
+```
+
+`vector` is the client's state vector (winning timestamp per key). `state` is
+optional and carries only registers the client wrote while offline; the server
+merges and fans them out before computing the diff. The server replies with a
+`delta` frame containing only registers whose timestamp is *newer* than the
+vector. Clients that omit the vector (or servers without `?delta=1`) fall back
+to the `snapshot`/`merge` exchange above. Delta sync is safe on reconnect and
+substantially cheaper for large rooms and long-lived clients.
+
 ### `presence` — ephemeral broadcast (not persisted)
 ```json
 { "type": "presence", "data": <any JSON> }
@@ -91,8 +121,24 @@ tombstone-GC low-water mark even for idle clients. No response.
 }
 ```
 `state` maps each key to its **register**: `v` value, `t` timestamp
-(`c` counter, `n` node), `d` tombstone flag. A fresh snapshot is also what a
-client receives after reconnecting — this is how missed updates are recovered.
+(`c` counter, `n` node), `d` tombstone flag. A fresh client receives this on
+join. A reconnecting client that used `hello` receives a `delta` instead; both
+are merged the same way, and either one is how missed updates are recovered.
+
+### `delta` — registers missed since the client's state vector
+```json
+{
+  "type": "delta",
+  "state": {
+    "title": { "v": "Hello again", "t": { "c": 11, "n": "c-9f3" } }
+  },
+  "epoch": 1
+}
+```
+Sent only in response to `hello`. Merge `state` exactly like a snapshot. An empty
+object means the client is already up to date. If the room epoch advanced the
+server rejects the hello with a `stale epoch` error; the client then resnapshots
+without its vector.
 
 ### `op` — a single committed change
 ```json
@@ -123,13 +169,14 @@ a winning write could not be persisted.
 
 - Applying any `op` or `snapshot` is **idempotent**: re-delivery cannot corrupt
   state because the underlying merge is a CRDT join.
-- A client may **reconnect at any time**; the `snapshot` it receives reflects all
-  writes the server had committed, so no acknowledgement/replay protocol is
-  required in Phase 1.
+- A client may **reconnect at any time**; the `snapshot` or `delta` it receives
+  reflects all writes the server had committed, so no acknowledgement/replay
+  protocol is required.
 
 ## HTTP endpoints
 
 - `GET /healthz` → `ok`
+- `GET /admin` → operator dashboard shell (room data requires an admin token)
 - `GET /readyz` → `ok` while the hub accepts realtime traffic; `503` during
   shutdown
 - `GET /stats` → JSON map of `room → { clients, live, tombstones, lowWater }`

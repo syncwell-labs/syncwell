@@ -157,12 +157,16 @@ zero-config while making a locked-down deployment one flag away.
 
 ## 8. What is intentionally NOT here yet
 
-- **Rich text** — the LWW-Map handles structured docs; collaborative *text* with
-  character-level merging needs a sequence CRDT (RGA/Yjs-style). (Stretch)
-- **Horizontal scaling** — one room is owned by one process today; sharding
-  rooms across nodes is the scaling stretch goal (§5, ROADMAP).
-- **fsync-per-write durability** — writes flush to the OS (survive process
-  kill); surviving power loss would add an fsync knob (§4 / store).
+- **Full rich-text documents** — the LWW-Map handles structured docs and
+  `SequenceText` handles character-level text with simple marks (bold/italic).
+  A full document model with nested blocks, embeds, and formatting spans is
+  still out of scope.
+- **Horizontal scaling** — one room is owned by one process today. A full-mesh
+  HTTP event relay and anti-entropy snapshots exist, but sharding and a
+  production pub/sub backbone remain the scaling stretch goal (§5, ROADMAP).
 
 These are omissions of scope, not of awareness — each is tracked in the roadmap
-with the reason it's deferred.
+with the reason it's deferred. Persistence durability is configurable
+(`-fsync os|batch|every`); see
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) for what survives `kill -9` versus
+power loss.

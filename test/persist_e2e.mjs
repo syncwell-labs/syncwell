@@ -17,7 +17,7 @@ const PORT = 8127;
 const BASE = `ws://localhost:${PORT}/ws`;
 
 function startServer(dataDir) {
-  return spawn(BIN, ["-addr", `:${PORT}`, "-data", dataDir], { stdio: "ignore" });
+  return spawn(BIN, ["-addr", `127.0.0.1:${PORT}`, "-data", dataDir], { stdio: "ignore" });
 }
 
 async function main() {

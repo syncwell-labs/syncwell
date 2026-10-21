@@ -1,0 +1,31 @@
+name: Demo smoke
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    if: vars.DEMO_URL != ''
+    runs-on: ubuntu-latest
+    env:
+      DEMO_URL: ${{ vars.DEMO_URL }}
+    steps:
+      - name: Check liveness, readiness, and demo shell
+        run: |
+          set -euo pipefail
+          base="${DEMO_URL%/}"
+          curl -fsS --retry 3 --retry-delay 2 "${base}/healthz"
+          curl -fsS --retry 3 --retry-delay 2 "${base}/readyz"
+          curl -fsS --retry 3 --retry-delay 2 "${base}/" >/dev/null
+          curl -fsS --retry 3 --retry-delay 2 "${base}/sequence.html" >/dev/null
+          echo "demo smoke passed for ${base}"
+
+      - name: Summary
+        run: |
+          echo "Demo: ${DEMO_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Liveness, readiness, and demo shells passed." >> "$GITHUB_STEP_SUMMARY"
