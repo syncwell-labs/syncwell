@@ -37,8 +37,8 @@ archives:
     files:
       - LICENSE
       - README.md
-      - docs/OPERATIONS.md
-      - docs/DEPLOY.md
+      - docs/operations/OPERATIONS.md
+      - docs/operations/DEPLOY.md
 
 checksum:
   name_template: checksums.txt

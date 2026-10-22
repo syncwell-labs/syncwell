@@ -28,13 +28,17 @@ Browser E2E additionally needs `firefox` and `geckodriver`.
 | `internal/server` | room hub, WebSocket pumps, auth, admin, webhooks, cluster relay |
 | `internal/store` | append-only persistence, snapshots, compaction, backup/restore |
 | `cmd/syncwell` | single-binary entrypoint |
-| `sdk/` | zero-dependency JS client: map, text, awareness, storage, types |
-| `python/` | dependency-free Python client and real-server E2E |
+| `clients/javascript/` | zero-dependency JS client: map, text, awareness, storage, types |
+| `clients/python/` | dependency-free Python client and real-server E2E |
 | `examples/` | React, Vue, Svelte, vanilla, and Node integrations |
-| `demo/` | state, kanban, and collaborative text demos |
-| `test/` | Node E2E, persistence, restore, GC, chaos, and bench harnesses |
+| `examples/demos/` | state, kanban, and collaborative text demos |
+| `tests/e2e/` | Node E2E: offline, multi-client, persistence, restore, GC, container |
+| `tests/a11y/` | axe-core and DOM-level accessibility checks |
+| `tests/bench/` | latency/throughput benchmark harness |
+| `tests/conformance/` | shared cross-client conformance fixtures |
+| `deploy/` | `proxies/`, `systemd/`, `monitoring/` deployment artifacts |
 | `website/` | VitePress documentation site |
-| `docs/` | protocol, design, operations, admin/webhooks, roadmap, launch |
+| `docs/` | `architecture/` `protocol/` `operations/` `product/` `standards/` `audits/` |
 
 ## Ground rules
 
@@ -45,12 +49,17 @@ Browser E2E additionally needs `firefox` and `geckodriver`.
    WebSocket library. Justify any new dependency in the pull request.
 3. **The Go and JavaScript CRDTs must agree.** Change and test both mirrors.
 4. **No silent v1 breaks.** Read
-   [`docs/PROTOCOL_COMPATIBILITY.md`](docs/PROTOCOL_COMPATIBILITY.md) before
+   [`docs/protocol/PROTOCOL_COMPATIBILITY.md`](./docs/protocol/PROTOCOL_COMPATIBILITY.md) before
    touching a frame, merge rule, limit, or auth format.
-5. **Document trade-offs.** New design decisions go in `DESIGN.md` with their
+5. **Document trade-offs.** New design decisions go in `docs/architecture/DESIGN.md` with their
    cost stated, not just their benefit.
 6. **Green before review.** `make all`, `make test-python`, and `make docs-build`
    must pass. CI runs the same plus the container smoke and browser E2E.
+7. **UI follows the UX standard.** Any change to a page, component, or doc
+   snippet must satisfy `docs/standards/UX_STANDARD.md` — including its "editorial ink &
+   paper" design language (serif display, hairline borders, no gradients or
+   pill badges). Screenshot light **and** dark after visual changes, and run
+   `make a11y` (axe-core must report 0 violations).
 
 ## Good first issues
 
@@ -69,14 +78,14 @@ Include the problem, the approach, trade-offs, and the commands you ran. Keep
 unrelated refactors out of the same PR. Update docs and examples with the code.
 
 - Bug reports: use the issue template with a minimal repro and, ideally, a seed
-  for one of the `test/*.mjs` harnesses.
+  for one of the `tests/e2e/*.mjs` harnesses.
 - Security issues: use the private advisory flow in
   [`SECURITY.md`](SECURITY.md), not a public issue.
-- Design/process: [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) and
-  [`docs/MILESTONES.md`](docs/MILESTONES.md).
+- Design/process: [`docs/product/GOVERNANCE.md`](./docs/product/GOVERNANCE.md) and
+  [`docs/product/MILESTONES.md`](./docs/product/MILESTONES.md).
 
 ## Review and release
 
 A maintainer reviews correctness, tests, compatibility, and operational impact.
-Releases follow the gates in `docs/MILESTONES.md`; breaking protocol changes
+Releases follow the gates in `docs/product/MILESTONES.md`; breaking protocol changes
 require protocol v2 and a major release.

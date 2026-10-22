@@ -45,4 +45,4 @@ browser and sent only as an `Authorization` header.
 
 Do not open a public issue for vulnerabilities. Use the repository's private
 security advisory flow described in `SECURITY.md`. The threat model, including
-residual risks and non-goals, is in `docs/THREAT_MODEL.md`.
+residual risks and non-goals, is in `docs/operations/THREAT_MODEL.md`.

@@ -27,7 +27,7 @@ will publish an advisory and credit the reporter unless you ask to stay anonymou
 In scope:
 
 - the Go server (`cmd/`, `internal/`),
-- the JavaScript SDK (`sdk/`),
+- the JavaScript SDK (`clients/javascript/`),
 - the shipped Docker image and deployment docs,
 - authentication/authorization, room isolation, and data persistence.
 
@@ -59,6 +59,6 @@ Out of scope:
 - Terminate TLS at a proxy or use built-in `-tls-cert`/`-tls-key`; plain HTTP/WS
   exposes tokens and document data on the wire.
 - Back up with `syncwell -data DIR -backup DIR` and verify with
-  `-verify-backup`; see `docs/OPERATIONS.md`.
+  `-verify-backup`; see `docs/operations/OPERATIONS.md`.
 - Read the threat model and residual risks in
-  [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
+  [`docs/operations/THREAT_MODEL.md`](./docs/operations/THREAT_MODEL.md).

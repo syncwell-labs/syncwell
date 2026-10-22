@@ -3,6 +3,12 @@
 `syncwell-client` is ESM/CJS with hand-maintained TypeScript declarations and no
 runtime dependencies.
 
+::: tip Installing
+`syncwell-client` publishes to npm with each release tag. Until then, copy the
+`clients/javascript/` directory into your project (or import from your server's `/sdk/` mount)
+— the API below is identical.
+:::
+
 ## Constructor
 
 ```ts

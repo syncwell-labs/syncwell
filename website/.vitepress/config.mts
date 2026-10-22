@@ -1,6 +1,7 @@
 import { defineConfig } from "vitepress";
 
 const base = process.env.DOCS_BASE || "/";
+const origin = process.env.DOCS_ORIGIN || "https://nil-vaghani.github.io";
 const repo = "https://github.com/Nil-Vaghani/syncwell";
 
 export default defineConfig({
@@ -10,11 +11,13 @@ export default defineConfig({
   description:
     "Self-hostable real-time collaboration: conflict-free shared state, collaborative text, presence, offline sync, and a single Go binary.",
   base,
+  sitemap: { hostname: `${origin}${base}` },
+  srcExclude: ["README.md"],
   cleanUrls: true,
   lastUpdated: true,
   head: [
     ["link", { rel: "icon", href: `${base}logo.svg` }],
-    ["meta", { name: "theme-color", content: "#2f6bff" }],
+    ["meta", { name: "theme-color", content: "#f2eee6" }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:title", content: "Syncwell" }],
     [
@@ -91,7 +94,20 @@ export default defineConfig({
         },
       ],
     },
-    search: { provider: "local" },
+    search: {
+      provider: "local",
+      options: {
+        translations: {
+          button: {
+            // visible text and accessible name are identical (WCAG 2.5.3);
+            // the CSS keycap cluster is hidden in custom.css because its
+            // kbd text was not part of the accessible name (axe 4.4.13).
+            buttonText: "Search (Ctrl+K)",
+            buttonAriaLabel: "Search (Ctrl+K)",
+          },
+        },
+      },
+    },
     editLink: {
       pattern: `${repo}/edit/main/website/:path`,
       text: "Edit this page",

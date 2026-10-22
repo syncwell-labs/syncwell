@@ -6,7 +6,9 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # The README promises Go 1.23+ for source builds. Keep that claim honest
+  # without running the full (slower) suite on every supported toolchain.
+  go-min:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,12 +17,24 @@ jobs:
         with:
           go-version: "1.23"
 
+      - name: Build with the documented minimum Go version
+        run: go build ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: SDK install, typecheck, build
-        working-directory: sdk
+        working-directory: clients/javascript
         run: |
           npm ci
           npm test
@@ -49,21 +63,28 @@ jobs:
           # than silently dropping the only real-browser coverage.
           command -v firefox
           command -v geckodriver
-          node --test test/browser_kanban_e2e.mjs
+          node --test tests/e2e/browser_kanban_e2e.mjs
 
       - name: Build docs site
         env:
           DOCS_BASE: /syncwell/
+          DOCS_ORIGIN: https://nil-vaghani.github.io
         run: make docs-build
+
+      - name: Accessibility scan (axe-core)
+        run: |
+          command -v chromedriver
+          command -v google-chrome || command -v chromium || command -v chromium-browser
+          python3 tests/a11y/axe_a11y.py
 
       - name: Vulnerability scan
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: "1.23"
+          go-version-input: "1.26"
           go-package: ./...
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: benchmarks
-          path: docs/BENCHMARKS.md
+          path: docs/product/BENCHMARKS.md

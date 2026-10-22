@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell — live multiplayer demo</title>
+    <link rel="stylesheet" href="/demo-common.css" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f2eee6;
+        --panel: #fbf8f1;
+        --panel-muted: #e9e2d4;
+        --text: #1d1a15;
+        --muted: #6a6154;
+        --accent: #a03a22;
+        --accent-soft: rgba(160, 58, 34, 0.10);
+        --accent-contrast: #fbf8f1;
+        --border: rgba(29, 26, 21, 0.16);
+        --ok: #2f6a3d;
+        --warn: #8a5a10;
+        --err: #9b2c2c;
+        --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, "Times New Roman", serif;
+        --font-sans: ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+        --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17140f;
+          --panel: #201c15;
+          --panel-muted: #2a241b;
+          --text: #ece5d5;
+          --muted: #a09684;
+          --accent: #d9825e;
+          --accent-soft: rgba(217, 130, 94, 0.14);
+          --accent-contrast: #17140f;
+          --border: rgba(236, 229, 213, 0.15);
+          --ok: #7fb88a;
+          --warn: #d3a556;
+          --err: #d97b7b;
+        }
+      }
+      * { box-sizing: border-box; }
+      ::placeholder { color: var(--muted); opacity: 0.75; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 15px/1.55 var(--font-sans);
+        color: var(--text);
+        background: var(--bg);
+      }
+      ::selection { background: var(--accent-soft); }
+      :root { accent-color: var(--accent); }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 48px 20px 40px;
+      }
+      .shell {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 26px 28px 24px;
+      }
+      .kicker {
+        margin: 0 0 8px;
+        font: 600 11px/1 var(--font-sans);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .demo-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .demo-header h1 {
+        margin: 0;
+        font-family: var(--font-serif);
+        font-weight: 600;
+        font-size: clamp(30px, 4vw, 40px);
+        line-height: 1.08;
+        letter-spacing: -0.012em;
+      }
+      .btn {
+        padding: 7px 14px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+        transition: border-color 0.15s, color 0.15s, background 0.15s;
+      }
+      .btn:hover { border-color: var(--accent); color: var(--accent); }
+      .btn.primary {
+        background: var(--text);
+        color: var(--bg);
+        border-color: var(--text);
+        font-weight: 550;
+      }
+      .btn.primary:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+      .sub {
+        color: var(--muted);
+        margin: 14px 0 20px;
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 16px;
+      }
+      #status {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font: 500 12px/1 var(--font-mono);
+        letter-spacing: 0.03em;
+        color: var(--muted);
+        transition: color 0.25s;
+      }
+      #status::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 1.5px;
+        background: currentColor;
+      }
+      textarea, input[type=text] {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--panel);
+        color: inherit;
+        font: inherit;
+      }
+      textarea {
+        min-height: 180px;
+        padding: 12px;
+        resize: vertical;
+        font: 14.5px/1.65 var(--font-mono);
+      }
+      input[type=text] { padding: 9px 12px; font-size: 15px; }
+      label {
+        display: block;
+        margin: 20px 0 8px;
+        font-family: var(--font-serif);
+        font-size: 12.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      #peers { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; min-height: 24px; align-items: center; }
+      .peer {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .peer::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: var(--peer-color);
+        display: inline-block;
+      }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="shell" aria-labelledby="app-title">
+        <p class="kicker">Live demo</p>
+        <div class="demo-header">
+          <h1 id="app-title">Syncwell</h1>
+          <div class="header-actions">
+            <span id="status" role="status" aria-live="polite">connecting…</span>
+            <button class="btn primary share-btn" id="share-btn" type="button">Share</button>
+          </div>
+        </div>
+        <p class="sub">Edit here — every change appears live on every connected device.</p>
+
+        <label for="title">Title</label>
+        <input id="title" type="text" placeholder="Type a title…" autocomplete="off" />
+
+        <label for="doc">Notes</label>
+        <textarea id="doc" placeholder="Start typing — it syncs as you go…" aria-label="Shared notes"></textarea>
+
+        <label id="peers-label">People here</label>
+        <div id="peers" aria-labelledby="peers-label"></div>
+        <nav class="demo-nav" aria-label="Demo navigation">
+          <a href="/kanban.html">Kanban board →</a>
+          <a href="/sequence.html">Shared document →</a>
+        </nav>
+      </section>
+    </main>
+
+    <script src="/demo-common.js"></script>
+    <script type="module">
+      import { Syncwell } from "/sdk/syncwell.js";
+
+      const statusEl = document.getElementById("status");
+      const titleEl = document.getElementById("title");
+      const docEl = document.getElementById("doc");
+      const peersEl = document.getElementById("peers");
+      const shareBtn = document.getElementById("share-btn");
+      const st = SyncwellDemo.status(statusEl);
+
+      const peers = new Map();
+
+      const clientIdKey = "syncwell-demo-client-id";
+      const fallbackId = () => `demo-${Math.floor(Math.random() * 1e9).toString(36)}`;
+      const savedClientId = localStorage.getItem(clientIdKey) || (crypto.randomUUID?.() ?? fallbackId());
+      localStorage.setItem(clientIdKey, savedClientId);
+      const myHue = SyncwellDemo.hueOf(savedClientId);
+
+      const roomId = SyncwellDemo.room("demo");
+      SyncwellDemo.welcome();
+      SyncwellDemo.share(roomId);
+      SyncwellDemo.nav();
+
+      const token = new URLSearchParams(location.search).get("token") || undefined;
+      const sw = new Syncwell(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`, roomId, {
+        clientId: savedClientId,
+        persist: true,
+        token,
+      });
+
+      function renderPeers() {
+        peersEl.innerHTML = "";
+        if (peers.size === 0) {
+          const empty = document.createElement("span");
+          empty.className = "peers-empty";
+          empty.textContent = "You're alone — click Share to invite someone";
+          peersEl.appendChild(empty);
+          shareBtn.classList.add("solo");
+          return;
+        }
+        shareBtn.classList.remove("solo");
+        for (const [clientId, hue] of peers) {
+          const d = document.createElement("span");
+          d.className = "peer";
+          d.style.setProperty("--peer-color", `hsl(${hue} 70% 55%)`);
+          d.append(SyncwellDemo.peerName(clientId, savedClientId));
+          peersEl.appendChild(d);
+        }
+      }
+
+      function paint(live) {
+        if (document.activeElement !== titleEl) titleEl.value = live.title ?? "";
+        if (document.activeElement !== docEl) docEl.value = live.doc ?? "";
+      }
+
+      function render(live) {
+        paint(live);
+      }
+
+      // When the user leaves a field, apply anything that was skipped while
+      // it was focused (their own unsent input already won via last-write-wins).
+      titleEl.addEventListener("blur", () => paint(sw.live()));
+      docEl.addEventListener("blur", () => paint(sw.live()));
+
+      sw.on("open", () => {
+        st.live();
+        sw.presence({ hue: myHue });
+        renderPeers();
+      });
+      sw.on("close", () => st.offline());
+      sw.on("change", render);
+      sw.on("presence", ({ clientId, data }) => {
+        if (data?.hue != null) {
+          peers.set(clientId, data.hue);
+          renderPeers();
+        }
+      });
+      sw.on("leave", ({ clientId }) => {
+        peers.delete(clientId);
+        renderPeers();
+      });
+      sw.on("error", (err) => st.error(err));
+
+      titleEl.addEventListener("input", () => sw.set("title", titleEl.value));
+      docEl.addEventListener("input", () => sw.set("doc", docEl.value));
+
+      // Hydrate from persisted local state so a reopened offline tab is not empty.
+      sw.ready.then(() => render(sw.live())).catch(() => {});
+
+      // Scrub the one-time token from the address bar and history.
+      if (token) {
+        const params = new URLSearchParams(location.search);
+        params.delete("token");
+        const qs = params.toString();
+        history.replaceState(null, "", qs ? `${location.pathname}?${qs}` : location.pathname);
+      }
+
+      sw.connect();
+    </script>
+  </body>
+</html>

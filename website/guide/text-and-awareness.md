@@ -1,5 +1,8 @@
 # Text and awareness
 
+Imports assume `syncwell-client` from npm — until it is published, copy `clients/javascript/`
+or import from your server's `/sdk/` mount (see [JavaScript SDK](/guide/sdk)).
+
 ## Collaborative text
 
 ```js
@@ -38,7 +41,7 @@ document model. Store block structure in normal map keys.
 import { Awareness } from "syncwell-client/awareness";
 
 const awareness = new Awareness(sw, {
-  user: { id: "u1", name: "Ada", color: "#2f6bff" },
+  user: { id: "u1", name: "Ada", color: "#a03a22" },
   heartbeat: 10_000,
   timeout: 30_000,
 });

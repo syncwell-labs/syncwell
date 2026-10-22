@@ -336,7 +336,7 @@ func (m *LWWMap) Live() map[string]json.RawMessage {
 // strictly below `below`, returning the number removed. `below` MUST be a
 // causal-stability low-water mark — a counter no future write can fall beneath —
 // otherwise a delayed stale write could resurrect a collected key. See
-// DESIGN.md §4 for how the server computes that bound.
+// docs/architecture/DESIGN.md §4 for how the server computes that bound.
 func (m *LWWMap) CollectTombstones(below uint64) int {
 	n := 0
 	for k, r := range m.entries {

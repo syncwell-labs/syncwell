@@ -22,7 +22,7 @@ import (
 
 var upgrader = websocket.Upgrader{
 	// Dev default: accept any origin. Lock this down behind an all‑list in
-	// production (see docs/ROADMAP.md → auth hooks).
+	// production (see docs/product/ROADMAP.md → auth hooks).
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 

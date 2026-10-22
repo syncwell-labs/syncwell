@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell — collaborative text</title>
+    <link rel="stylesheet" href="/demo-common.css" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f2eee6;
+        --panel: #fbf8f1;
+        --panel-muted: #e9e2d4;
+        --text: #1d1a15;
+        --muted: #6a6154;
+        --accent: #a03a22;
+        --accent-soft: rgba(160, 58, 34, 0.10);
+        --accent-contrast: #fbf8f1;
+        --border: rgba(29, 26, 21, 0.16);
+        --ok: #2f6a3d;
+        --warn: #8a5a10;
+        --err: #9b2c2c;
+        --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, "Times New Roman", serif;
+        --font-sans: ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+        --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17140f;
+          --panel: #201c15;
+          --panel-muted: #2a241b;
+          --text: #ece5d5;
+          --muted: #a09684;
+          --accent: #d9825e;
+          --accent-soft: rgba(217, 130, 94, 0.14);
+          --accent-contrast: #17140f;
+          --border: rgba(236, 229, 213, 0.15);
+          --ok: #7fb88a;
+          --warn: #d3a556;
+          --err: #d97b7b;
+        }
+      }
+      * { box-sizing: border-box; }
+      ::placeholder { color: var(--muted); opacity: 0.75; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 15px/1.55 var(--font-sans);
+        color: var(--text);
+        background: var(--bg);
+      }
+      ::selection { background: var(--accent-soft); }
+      :root { accent-color: var(--accent); }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      main { max-width: 860px; margin: 0 auto; padding: 48px 20px 40px; }
+      .shell {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 26px 28px 24px;
+      }
+      .kicker {
+        margin: 0 0 8px;
+        font: 600 11px/1 var(--font-sans);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .demo-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .demo-header h1 {
+        margin: 0;
+        font-family: var(--font-serif);
+        font-weight: 600;
+        font-size: clamp(28px, 4vw, 38px);
+        line-height: 1.08;
+        letter-spacing: -0.012em;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 14px 0 0;
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 16px;
+      }
+      #status {
+        display: inline-flex; align-items: center; gap: 7px;
+        font: 500 12px/1 var(--font-mono); letter-spacing: 0.03em; color: var(--muted);
+      }
+      #status::before {
+        content: ""; width: 7px; height: 7px; border-radius: 1.5px; background: currentColor;
+      }
+      button {
+        border: 1px solid var(--border); border-radius: 4px; background: transparent;
+        color: inherit; font: inherit; padding: 6px 12px; cursor: pointer;
+        transition: border-color 0.15s, color 0.15s, background 0.15s;
+      }
+      button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+      button:disabled { opacity: 0.4; cursor: default; }
+      .btn.primary {
+        background: var(--text);
+        color: var(--bg);
+        border-color: var(--text);
+        font-weight: 550;
+        padding: 7px 14px;
+      }
+      .btn.primary:hover:not(:disabled) {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-contrast);
+      }
+      input[type="text"] {
+        border: 1px solid var(--border); border-radius: 4px; background: var(--panel);
+        color: inherit; font: inherit; padding: 6px 10px; width: 180px;
+      }
+      .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+      .spacer { flex: 1; }
+      .editor-wrap { position: relative; margin-top: 10px; }
+      textarea {
+        width: 100%; min-height: 300px; margin: 0; padding: 14px; resize: vertical;
+        border: 1px solid var(--border); border-radius: 4px; background: var(--panel);
+        color: inherit; font: 14.5px/1.65 var(--font-mono); white-space: pre;
+        overflow: auto; tab-size: 2;
+      }
+      #carets { position: absolute; inset: 0; pointer-events: none; overflow: hidden; border-radius: 4px; }
+      .caret { position: absolute; width: 2px; border-radius: 2px; }
+      .caret .label {
+        position: absolute; left: -1px; top: -1.35em; padding: 1px 5px; border-radius: 3px;
+        font: 11px/1.4 var(--font-sans); color: #fff; white-space: nowrap;
+      }
+      #peers { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; min-height: 24px; align-items: center; }
+      .peer { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+      .peer::before {
+        content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--peer-color); display: inline-block;
+      }
+      label, .section-label {
+        font-family: var(--font-serif);
+        font-size: 12.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        display: block;
+        margin: 20px 0 8px;
+      }
+      #preview {
+        border: 1px dashed var(--border); border-radius: 4px; padding: 12px;
+        min-height: 52px; white-space: pre-wrap;
+      }
+      #preview b, #preview strong { color: var(--accent); }
+      kbd {
+        border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 3px;
+        padding: 0 4px; font-size: 11px; font-family: var(--font-mono);
+      }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="shell" aria-labelledby="app-title">
+        <p class="kicker">Syncwell demo</p>
+        <div class="demo-header">
+          <h1 id="app-title">Collaborative text</h1>
+          <div class="header-actions">
+            <span id="status" role="status" aria-live="polite">connecting…</span>
+            <button class="btn primary share-btn" id="share-btn" type="button">Share</button>
+          </div>
+        </div>
+        <p class="sub">Write together in real time — live cursors, undo/redo, works offline.</p>
+
+        <div class="row">
+          <input id="name" type="text" placeholder="Your name" autocomplete="off" aria-label="Your name" />
+          <button id="undo" disabled>Undo <kbd>Ctrl/⌘ Z</kbd></button>
+          <button id="redo" disabled>Redo</button>
+          <button id="bold">Bold selection</button>
+          <span class="spacer"></span>
+        </div>
+
+        <label for="doc">Shared document</label>
+        <div class="editor-wrap">
+          <textarea id="doc" wrap="off" spellcheck="false" placeholder="Start typing…"></textarea>
+          <div id="carets" aria-hidden="true"></div>
+        </div>
+
+        <div id="peers" role="group" aria-label="People here"></div>
+
+        <p class="section-label" id="preview-label">Formatted preview</p>
+        <div id="preview" role="note" aria-labelledby="preview-label"></div>
+
+        <nav class="demo-nav" aria-label="Demo navigation">
+          <a href="/">Home →</a>
+          <a href="/kanban.html">Kanban board →</a>
+        </nav>
+      </section>
+    </main>
+
+    <script src="/demo-common.js"></script>
+    <script type="module">
+      import { Syncwell } from "/sdk/syncwell.js";
+      import { SequenceText } from "/sdk/text.js";
+      import { Awareness } from "/sdk/awareness.js";
+
+      const statusEl = document.getElementById("status");
+      const docEl = document.getElementById("doc");
+      const caretsEl = document.getElementById("carets");
+      const peersEl = document.getElementById("peers");
+      const previewEl = document.getElementById("preview");
+      const nameEl = document.getElementById("name");
+      const undoEl = document.getElementById("undo");
+      const redoEl = document.getElementById("redo");
+      const boldEl = document.getElementById("bold");
+      const shareBtn = document.getElementById("share-btn");
+      const st = SyncwellDemo.status(statusEl);
+
+      const room = SyncwellDemo.room("text");
+      SyncwellDemo.welcome();
+      SyncwellDemo.share(room);
+      SyncwellDemo.nav();
+
+      const clientIdKey = "syncwell-text-client-id";
+      const fallbackId = () => `text-${Math.floor(Math.random() * 1e9).toString(36)}`;
+      const clientId = localStorage.getItem(clientIdKey) || (crypto.randomUUID?.() ?? fallbackId());
+      localStorage.setItem(clientIdKey, clientId);
+
+      const nameKey = "syncwell-text-name";
+      const myName = nameEl.value = localStorage.getItem(nameKey) || `Guest ${clientId.slice(-4)}`;
+      nameEl.addEventListener("input", () => {
+        localStorage.setItem(nameKey, nameEl.value || "Guest");
+        awareness.setUser({ id: clientId, name: nameEl.value || "Guest" });
+      });
+
+      const token = new URLSearchParams(location.search).get("token") || undefined;
+      const sw = new Syncwell(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`, room, {
+        clientId,
+        persist: true,
+        token,
+        storageKey: `syncwell:text:${room}:${clientId}`,
+      });
+      const text = new SequenceText(sw, { prefix: "text:" });
+      const awareness = new Awareness(sw, {
+        user: { id: clientId, name: myName },
+        start: false,
+      });
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      let lastSelection = { index: 0, selectionEnd: 0 };
+      let awarenessFrame = 0;
+      let syncing = false;
+
+      function peers() {
+        return awareness.getStates().filter((peer) => !peer.self);
+      }
+
+      function renderPreview() {
+        previewEl.innerHTML = "";
+        for (const id of text.visibleIds()) {
+          const node = text.doc.nodes.get(id);
+          if (!node) continue;
+          let el = document.createTextNode(node.text);
+          if (node.marks?.bold) {
+            el = document.createElement("strong");
+            el.textContent = node.text;
+          } else if (node.marks?.italic) {
+            el = document.createElement("em");
+            el.textContent = node.text;
+          }
+          previewEl.appendChild(el);
+        }
+      }
+
+      function renderPeers() {
+        peersEl.innerHTML = "";
+        if (peers().length === 0) {
+          const empty = document.createElement("span");
+          empty.className = "peers-empty";
+          empty.textContent = "You're alone — click Share to invite someone";
+          peersEl.appendChild(empty);
+          shareBtn.classList.add("solo");
+          return;
+        }
+        shareBtn.classList.remove("solo");
+        for (const peer of peers()) {
+          const chip = document.createElement("span");
+          chip.className = "peer";
+          chip.style.setProperty("--peer-color", peer.color || "var(--accent)");
+          const name = peer.user?.name || SyncwellDemo.peerName(peer.clientId, clientId);
+          const cursor = peer.cursor;
+          chip.textContent = `${name}${cursor ? ` · ${cursor.index}` : ""}`;
+          peersEl.appendChild(chip);
+        }
+      }
+
+      function caretMetrics(index) {
+        const style = getComputedStyle(docEl);
+        ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const value = docEl.value.slice(0, Math.max(0, Math.min(index, docEl.value.length)));
+        const lines = value.split("\n");
+        const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.65;
+        return {
+          x: ctx.measureText(lines[lines.length - 1]).width + parseFloat(style.paddingLeft) - docEl.scrollLeft,
+          y: (lines.length - 1) * lineHeight + parseFloat(style.paddingTop) - docEl.scrollTop,
+          height: lineHeight,
+        };
+      }
+
+      function renderCarets() {
+        caretsEl.innerHTML = "";
+        for (const peer of peers()) {
+          const cursor = peer.cursor;
+          if (!cursor) continue;
+          const { x, y, height } = caretMetrics(cursor.index);
+          if (x < -10 || y < -20 || y > docEl.clientHeight + 10) continue;
+          const caret = document.createElement("div");
+          caret.className = "caret";
+          caret.style.left = `${x}px`;
+          caret.style.top = `${y}px`;
+          caret.style.height = `${height}px`;
+          caret.style.background = peer.color || "var(--accent)";
+          const label = document.createElement("span");
+          label.className = "label";
+          label.style.background = peer.color || "var(--accent)";
+          label.textContent = peer.user?.name || SyncwellDemo.peerName(peer.clientId, clientId);
+          caret.appendChild(label);
+          caretsEl.appendChild(caret);
+        }
+      }
+
+      function renderSelection() {
+        const start = docEl.selectionStart ?? 0;
+        const end = docEl.selectionEnd ?? start;
+        lastSelection = { index: start, selectionEnd: end };
+        if (awarenessFrame) return;
+        awarenessFrame = requestAnimationFrame(() => {
+          awarenessFrame = 0;
+          awareness.setCursor(lastSelection);
+        });
+      }
+
+      function render() {
+        if (document.activeElement !== docEl) docEl.value = text.text();
+        renderPreview();
+        renderCarets();
+        undoEl.disabled = !sw.canUndo();
+        redoEl.disabled = !sw.canRedo();
+      }
+
+      function syncFromText(next) {
+        const cur = text.text();
+        if (next === cur) return;
+        let prefix = 0;
+        while (prefix < cur.length && prefix < next.length && cur[prefix] === next[prefix]) prefix++;
+        let suffix = 0;
+        while (
+          suffix < cur.length - prefix &&
+          suffix < next.length - prefix &&
+          cur[cur.length - 1 - suffix] === next[next.length - 1 - suffix]
+        ) suffix++;
+        const remove = cur.length - prefix - suffix;
+        const insert = next.slice(prefix, next.length - suffix);
+        syncing = true;
+        try {
+          text.replaceRange(prefix, remove, insert);
+        } finally {
+          syncing = false;
+        }
+      }
+
+      docEl.addEventListener("input", () => {
+        if (!syncing) syncFromText(docEl.value);
+        renderSelection();
+        renderCarets();
+      });
+      for (const event of ["keyup", "click", "select", "focus"]) {
+        docEl.addEventListener(event, renderSelection);
+      }
+      docEl.addEventListener("scroll", renderCarets);
+
+      document.addEventListener("keydown", (event) => {
+        const mod = event.metaKey || event.ctrlKey;
+        if (!mod) return;
+        if (event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          if (event.shiftKey) sw.redo();
+          else sw.undo();
+          render();
+        } else if (event.key.toLowerCase() === "y") {
+          event.preventDefault();
+          sw.redo();
+          render();
+        }
+      });
+
+      undoEl.addEventListener("click", () => {
+        sw.undo();
+        render();
+      });
+      redoEl.addEventListener("click", () => {
+        sw.redo();
+        render();
+      });
+      boldEl.addEventListener("click", () => {
+        const start = docEl.selectionStart ?? 0;
+        const end = docEl.selectionEnd ?? start;
+        if (end <= start) return;
+        const first = text.doc.nodes.get(text.visibleIds()[start]);
+        const makeBold = !first?.marks?.bold;
+        text.markRange(start, end - start, makeBold ? { bold: true } : undefined);
+        render();
+      });
+
+      sw.on("open", () => {
+        st.live();
+        awareness.start();
+        renderSelection();
+      });
+      sw.on("close", () => st.offline());
+      sw.on("error", (err) => st.error(err));
+      sw.on("history", render);
+
+      text.on("change", render);
+      awareness.on("update", () => {
+        renderPeers();
+        renderCarets();
+      });
+      awareness.on("remove", () => {
+        renderPeers();
+        renderCarets();
+      });
+
+      renderPeers();
+      render();
+      sw.connect().ready?.then(render);
+    </script>
+  </body>
+</html>

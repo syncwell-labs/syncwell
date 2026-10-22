@@ -22,12 +22,12 @@ Requirements: Go 1.23+, Node 18+, Python 3.10+ for the Python client.
 | `internal/crdt` | CRDT core, property and chaos tests |
 | `internal/server` | Hub, rooms, WebSocket, auth, cluster relay |
 | `internal/store` | Append-only persistence and compaction |
-| `sdk/` | Zero-dependency JS client, text, awareness, storage |
-| `demo/` | State, kanban, and sequence demos |
-| `test/` | Node E2E, persistence, GC, chaos, bench harnesses |
-| `python/` | Dependency-free Python client and E2E |
+| `clients/javascript/` | Zero-dependency JS client, text, awareness, storage |
+| `examples/demos/` | State, kanban, and sequence demos |
+| `tests/` | `e2e/`, `a11y/`, `bench/`, `conformance/` harnesses |
+| `clients/python/` | Dependency-free Python client and E2E |
 | `website/` | VitePress documentation site |
-| `docs/` | Protocol, design, operations, roadmap, launch |
+| `docs/` | `architecture/`, `protocol/`, `operations/`, `product/`, `standards/`, `audits/` |
 
 ## Ground rules
 
@@ -36,7 +36,7 @@ Requirements: Go 1.23+, Node 18+, Python 3.10+ for the Python client.
 2. **Keep the Go core dependency-light.** Only the WebSocket library is a runtime
    dependency; justify anything new.
 3. **Go and JS must agree.** Change and test both CRDT mirrors together.
-4. **Document trade-offs.** Record design decisions and costs in `DESIGN.md`.
+4. **Document trade-offs.** Record design decisions and costs in `docs/architecture/DESIGN.md`.
 5. **Green before review.** `make all`, `make test-python`, and `make docs-build`
    must pass.
 6. **No silent protocol breaks.** Follow the

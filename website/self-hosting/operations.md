@@ -14,16 +14,17 @@ With `-data`, each room has an append-only log and periodic snapshots. Records
 survive `SIGKILL`; `-fsync every` closes the power-loss window at a throughput
 cost. Only a torn final record is tolerated; mid-file corruption fails loudly.
 
-Backups use a SHA-256 manifest and can be verified and restored:
+A backup is a **directory** (copied room logs plus a checksummed `MANIFEST`
+file), and it can be verified and restored:
 
 ```bash
-syncwell -data /data -backup /backups/syncwell.tar
-syncwell -verify-backup /backups/syncwell.tar
-syncwell -restore /backups/syncwell.tar -data /data
+syncwell -data /data -backup /backups/syncwell/   # writes a directory, not a tar
+syncwell -verify-backup /backups/syncwell/
+syncwell -restore /backups/syncwell/ -data /data
 ```
 
 Run a restore drill on a copy before relying on it. The repository ships
-`make restore-drill` and `docs/RESTORE_DRILL.md`.
+`make restore-drill` and `docs/operations/RESTORE_DRILL.md`.
 
 ## Metrics
 
@@ -33,8 +34,8 @@ webhook delivery, and dropped-event counters. Protect it with the admin token
 and optionally `-admin-allowlist`.
 
 A Grafana dashboard, Prometheus alert rules, SLOs, and load-test results live in
-the repository under `deploy/`, `docs/ALERTS.md`, `docs/SLO.md`, and
-`docs/LOAD_TEST.md`.
+the repository under `deploy/`, `docs/operations/ALERTS.md`, `docs/operations/SLO.md`, and
+`docs/operations/LOAD_TEST.md`.
 
 ## Admin dashboard
 

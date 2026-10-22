@@ -1,12 +1,14 @@
 # Getting started
 
 Syncwell is a server plus a client SDK. The server owns rooms, persistence, auth,
-and fan-out; the SDK keeps a local CRDT replica so the UI is instant and keeps
-working offline.
+and fan-out; the SDK keeps a local replica — a conflict-free copy of the shared
+state (a [CRDT](/guide/concepts)) — so the UI is instant and keeps working
+offline.
 
 ## 1. Run the server
 
-For local development, bind loopback so credentials are not required:
+Requires **Go 1.23+**. For local development, bind loopback so credentials are
+not required:
 
 ```bash
 go run ./cmd/syncwell -addr 127.0.0.1:8080
@@ -21,7 +23,10 @@ Open any demo:
 | `http://localhost:8080/sequence.html` | Collaborative text, cursors, undo/redo |
 
 A public bind (`:8080`, Docker, or a platform `PORT`) generates a room secret and
-admin token on first start and logs them once. For stable credentials:
+admin token on first start and prints them once to stderr. The **secret** is the
+server's signing key; a **room token** is the signed, expiring pass it produces
+for one room — clients join with `?token=...`. (On the loopback bind above there
+is no secret, so no token is needed at all.) For stable credentials:
 
 ```bash
 export SYNCWELL_SECRET=$(openssl rand -hex 32)
@@ -33,8 +38,8 @@ go build -o bin/syncwell ./cmd/syncwell
 Mint a room token when `-secret` is set:
 
 ```bash
-./bin/syncwell -secret "$SYNCWELL_SECRET" -mint my-room
-# open http://localhost:8080/?token=<token>
+./bin/syncwell -secret "$SYNCWELL_SECRET" -mint demo
+# open http://localhost:8080/?room=demo&token=<token>
 ```
 
 ## 2. Install the client
@@ -46,7 +51,7 @@ path needs no install:
 import { Syncwell } from "/sdk/syncwell.js";
 ```
 
-For a bundler or Node setup, copy the `sdk/` directory into your project (or
+For a bundler or Node setup, copy the `clients/javascript/` directory into your project (or
 install `npm install syncwell-client` once the package is published — the API
 is identical).
 
@@ -60,6 +65,7 @@ const sw = new Syncwell("ws://localhost:8080/ws", "my-room", {
   persist: true, // localStorage (IndexedDB/file adapters also available)
 });
 
+const render = (live) => console.log("state:", live);
 sw.on("change", (live) => render(live));
 sw.on("open", () => console.log("connected"));
 sw.on("close", () => console.log("offline; edits are queued"));

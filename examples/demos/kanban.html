@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell — collaborative kanban</title>
+    <link rel="stylesheet" href="/demo-common.css" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f2eee6;
+        --panel: #fbf8f1;
+        --panel-muted: #e9e2d4;
+        --text: #1d1a15;
+        --muted: #6a6154;
+        --accent: #a03a22;
+        --accent-soft: rgba(160, 58, 34, 0.10);
+        --accent-contrast: #fbf8f1;
+        --border: rgba(29, 26, 21, 0.16);
+        --ok: #2f6a3d;
+        --warn: #8a5a10;
+        --err: #9b2c2c;
+        --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, "Times New Roman", serif;
+        --font-sans: ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+        --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17140f;
+          --panel: #201c15;
+          --panel-muted: #2a241b;
+          --text: #ece5d5;
+          --muted: #a09684;
+          --accent: #d9825e;
+          --accent-soft: rgba(217, 130, 94, 0.14);
+          --accent-contrast: #17140f;
+          --border: rgba(236, 229, 213, 0.15);
+          --ok: #7fb88a;
+          --warn: #d3a556;
+          --err: #d97b7b;
+        }
+      }
+      * { box-sizing: border-box; }
+      ::placeholder { color: var(--muted); opacity: 0.75; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 15px/1.55 var(--font-sans);
+        color: var(--text);
+        background: var(--bg);
+      }
+      ::selection { background: var(--accent-soft); }
+      :root { accent-color: var(--accent); }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      main { padding: 32px 24px 40px; max-width: 1200px; margin: 0 auto; }
+      .kicker {
+        margin: 0 0 8px;
+        font: 600 11px/1 var(--font-sans);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .demo-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .demo-header h1 {
+        font-family: var(--font-serif);
+        font-weight: 600;
+        font-size: clamp(28px, 3vw, 36px);
+        margin: 0;
+        line-height: 1.08;
+        letter-spacing: -0.012em;
+      }
+      .btn {
+        padding: 7px 14px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+        transition: border-color 0.15s, color 0.15s, background 0.15s;
+      }
+      .btn:hover { border-color: var(--accent); color: var(--accent); }
+      .btn.primary {
+        background: var(--text);
+        color: var(--bg);
+        border-color: var(--text);
+        font-weight: 550;
+      }
+      .btn.primary:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+      #status {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font: 500 12px/1 var(--font-mono);
+        letter-spacing: 0.03em;
+        color: var(--muted);
+        transition: color 0.25s;
+      }
+      #status::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 1.5px;
+        background: currentColor;
+      }
+      #peers { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0; align-items: center; min-height: 24px; }
+      .peer {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .peer::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        background: var(--peer-color);
+        display: inline-block;
+      }
+      .board {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 18px;
+        max-width: 1100px;
+      }
+      .col {
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px;
+        min-height: 240px;
+        display: flex;
+        flex-direction: column;
+      }
+      .col h2 {
+        font-family: var(--font-serif);
+        font-size: 12.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        color: var(--text);
+        margin: 0 4px 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      .col.drag-over { outline: 1.5px dashed var(--accent); outline-offset: -4px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        cursor: grab;
+      }
+      .card:active { cursor: grabbing; }
+      .card:hover { border-color: color-mix(in srgb, var(--text) 30%, var(--border)); }
+      .card-row { display: flex; align-items: flex-start; gap: 8px; }
+      .card-text { flex: 1; min-width: 0; word-break: break-word; }
+      .card .move {
+        flex: none;
+        font-size: 12px;
+        max-width: 84px;
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        background: var(--panel);
+        color: inherit;
+        cursor: pointer;
+        padding: 2px 4px;
+      }
+      .card .del {
+        flex: none;
+        color: var(--muted);
+        cursor: pointer;
+        border: 0;
+        background: none;
+        font-size: 18px;
+        line-height: 1;
+        padding: 2px 4px;
+      }
+      .card .del:hover { color: var(--err); }
+      .add { display: flex; gap: 6px; margin-top: auto; }
+      .add input {
+        flex: 1;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--panel);
+        color: inherit;
+        font: inherit;
+      }
+      .add button {
+        padding: 8px 14px;
+        border: 1px solid var(--text);
+        border-radius: 4px;
+        background: var(--text);
+        color: var(--bg);
+        font: inherit;
+        font-weight: 550;
+        cursor: pointer;
+      }
+      .add button:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+      a { color: var(--accent); }
+    </style>
+    <script>
+      (() => {
+        const params = new URLSearchParams(location.search);
+        if (!params.has("test")) return;
+        class FakeSyncwell {
+          constructor() {
+            this.handlers = {};
+            this.doc = new Map();
+          }
+          on(event, cb) {
+            (this.handlers[event] ||= []).push(cb);
+            return this;
+          }
+          _emit(event, payload) {
+            for (const cb of this.handlers[event] || []) cb(payload);
+          }
+          connect() {
+            queueMicrotask(() => {
+              this._emit("open");
+              this._emit("change", this.live());
+            });
+            return this;
+          }
+          close() {
+            this._emit("close");
+          }
+          _touch(key, value) {
+            if (value == null) this.doc.delete(key);
+            else this.doc.set(key, value);
+            this._emit("change", this.live());
+          }
+          set(key, value) { this._touch(key, value); }
+          delete(key) { this._touch(key, null); }
+          get(key) { return this.doc.get(key); }
+          live() {
+            const out = {};
+            for (const [k, v] of this.doc.entries()) out[k] = v;
+            return out;
+          }
+          presence() {}
+        }
+        window.__SYNCWELL_FACTORY__ = FakeSyncwell;
+      })();
+    </script>
+  </head>
+  <body>
+    <main>
+      <p class="kicker">Syncwell demo</p>
+      <header class="demo-header">
+        <h1>Kanban board</h1>
+        <div class="header-actions">
+          <span id="status" role="status" aria-live="polite">connecting…</span>
+          <button class="btn primary share-btn" id="share-btn" type="button">Share</button>
+        </div>
+      </header>
+      <div id="peers" role="group" aria-label="People here" title="People here"></div>
+      <div class="board" id="board"></div>
+      <p class="hint">
+        Drag cards between columns — or focus a card and use ← / → to move it,
+        Delete to remove it. Open the Share link in another window to collaborate.
+      </p>
+      <nav class="demo-nav" aria-label="Demo navigation">
+        <a href="/">Home →</a>
+        <a href="/sequence.html">Shared document →</a>
+      </nav>
+    </main>
+
+    <script src="/demo-common.js"></script>
+    <script type="module">
+      const isTest = new URLSearchParams(location.search).has("test");
+      let Syncwell = window.__SYNCWELL_FACTORY__;
+      if (!Syncwell) {
+        ({ Syncwell } = await import("/sdk/syncwell.js"));
+      }
+
+      const COLUMNS = [
+        { id: "todo", label: "To Do" },
+        { id: "doing", label: "Doing" },
+        { id: "done", label: "Done" },
+      ];
+      const PREFIX = "card:";
+      const clientIdKey = "syncwell-kanban-client-id";
+      const fallbackId = () => `kanban-${Math.floor(Math.random() * 1e9).toString(36)}`;
+      const protocolId = localStorage.getItem(clientIdKey) || (crypto.randomUUID?.() ?? fallbackId());
+      localStorage.setItem(clientIdKey, protocolId);
+
+      const roomId = SyncwellDemo.room("kanban");
+      if (!isTest) {
+        SyncwellDemo.welcome();
+        SyncwellDemo.share(roomId);
+      }
+      SyncwellDemo.nav();
+
+      const statusEl = document.getElementById("status");
+      const peersEl = document.getElementById("peers");
+      const boardEl = document.getElementById("board");
+      const shareBtn = document.getElementById("share-btn");
+      const st = SyncwellDemo.status(statusEl);
+
+      const myHue = SyncwellDemo.hueOf(protocolId);
+      const peers = new Map();
+
+      const token = new URLSearchParams(location.search).get("token") || undefined;
+      const sw = new Syncwell(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`, roomId, {
+        clientId: protocolId,
+        persist: true,
+        token,
+      });
+
+      // --- ordering helper: monotonic-ish key so new cards land at the bottom ---
+      let lastOrd = 0;
+      function nextOrd() {
+        const t = Date.now();
+        lastOrd = t > lastOrd ? t : lastOrd + 1;
+        return lastOrd;
+      }
+
+      // --- rendering ---------------------------------------------------------
+      function cards() {
+        const live = sw.live();
+        return Object.keys(live)
+          .filter((k) => k.startsWith(PREFIX))
+          .map((k) => ({ id: k.slice(PREFIX.length), ...live[k] }))
+          .sort((a, b) => (a.ord || 0) - (b.ord || 0));
+      }
+
+      function render() {
+        // Preserve focus and in-progress typing across the full re-render.
+        const active = document.activeElement;
+        let restore = null;
+        if (active && boardEl.contains(active)) {
+          if (active.tagName === "INPUT" && active.closest(".col")) {
+            restore = {
+              col: active.closest(".col").dataset.col,
+              value: active.value,
+              selStart: active.selectionStart,
+              selEnd: active.selectionEnd,
+            };
+          } else if (active.classList?.contains("card") && active.dataset.id) {
+            restore = { id: active.dataset.id };
+          }
+        }
+
+        const all = cards();
+        boardEl.innerHTML = "";
+        for (const col of COLUMNS) {
+          const colEl = document.createElement("div");
+          colEl.className = "col";
+          colEl.dataset.col = col.id;
+          const header = document.createElement("h2");
+          header.textContent = col.label;
+          colEl.appendChild(header);
+
+          for (const c of all.filter((x) => x.col === col.id)) {
+            const card = document.createElement("div");
+            card.className = "card";
+            card.draggable = true;
+            card.dataset.id = c.id;
+            card.tabIndex = 0;
+            card.setAttribute("role", "group");
+            card.setAttribute("aria-label", `${c.text}. In ${col.label}. Press arrow keys to move, delete to remove.`);
+            const row = document.createElement("div");
+            row.className = "card-row";
+            const text = document.createElement("span");
+            text.className = "card-text";
+            text.textContent = c.text;
+            const del = document.createElement("button");
+            del.className = "del";
+            del.type = "button";
+            del.title = "Delete card";
+            del.setAttribute("aria-label", `Delete card ${c.text}`);
+            del.textContent = "×";
+            del.onclick = () => sw.delete(PREFIX + c.id);
+            // Touch-friendly move control (HTML5 drag-and-drop does not fire on touch).
+            const move = document.createElement("select");
+            move.className = "move";
+            move.setAttribute("aria-label", `Move card ${c.text} to column`);
+            for (const dest of COLUMNS) {
+              const opt = document.createElement("option");
+              opt.value = dest.id;
+              opt.textContent = dest.id === c.col ? "→ here" : `→ ${dest.label}`;
+              opt.selected = dest.id === c.col;
+              move.appendChild(opt);
+            }
+            move.onchange = () => {
+              if (move.value === c.col) return;
+              sw.set(PREFIX + c.id, { ...c, col: move.value, ord: nextOrd() });
+            };
+            row.append(text, move, del);
+            card.appendChild(row);
+            card.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", c.id));
+            card.addEventListener("keydown", (e) => {
+              if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                sw.delete(PREFIX + c.id);
+                return;
+              }
+              const index = COLUMNS.findIndex((x) => x.id === c.col);
+              if (e.key === "ArrowLeft" && index > 0) {
+                e.preventDefault();
+                sw.set(PREFIX + c.id, { ...c, col: COLUMNS[index - 1].id, ord: nextOrd() });
+              }
+              if (e.key === "ArrowRight" && index < COLUMNS.length - 1) {
+                e.preventDefault();
+                sw.set(PREFIX + c.id, { ...c, col: COLUMNS[index + 1].id, ord: nextOrd() });
+              }
+            });
+            colEl.appendChild(card);
+          }
+
+          const add = document.createElement("div");
+          add.className = "add";
+          const input = document.createElement("input");
+          input.type = "text";
+          input.placeholder = "Add a card…";
+          input.setAttribute("aria-label", `New card in ${col.label}`);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "Add";
+          const commit = () => {
+            const text = input.value.trim();
+            if (!text) return;
+            sw.set(PREFIX + crypto.randomUUID().slice(0, 8), { text, col: col.id, ord: nextOrd() });
+            input.value = "";
+          };
+          button.onclick = commit;
+          add.append(input, button);
+          input.addEventListener("keydown", (e) => e.key === "Enter" && commit());
+          colEl.appendChild(add);
+
+          colEl.addEventListener("dragover", (e) => { e.preventDefault(); colEl.classList.add("drag-over"); });
+          colEl.addEventListener("dragleave", () => colEl.classList.remove("drag-over"));
+          colEl.addEventListener("drop", (e) => {
+            e.preventDefault();
+            colEl.classList.remove("drag-over");
+            const id = e.dataTransfer.getData("text/plain");
+            const cur = sw.get(PREFIX + id);
+            if (cur && cur.col !== col.id) {
+              sw.set(PREFIX + id, { ...cur, col: col.id, ord: nextOrd() });
+            }
+          });
+
+          boardEl.appendChild(colEl);
+        }
+
+        if (restore?.col) {
+          const col = boardEl.querySelector(`.col[data-col="${CSS.escape(restore.col)}"]`);
+          const input = col?.querySelector("input");
+          if (input) {
+            input.focus();
+            input.value = restore.value;
+            try {
+              input.setSelectionRange(restore.selStart, restore.selEnd);
+            } catch {
+              /* selection unsupported on input types without a selection */
+            }
+          }
+        } else if (restore?.id) {
+          const card = boardEl.querySelector(`.card[data-id="${CSS.escape(restore.id)}"]`);
+          card?.focus();
+        }
+      }
+
+      function renderPeers() {
+        peersEl.innerHTML = "";
+        if (peers.size === 0) {
+          const empty = document.createElement("span");
+          empty.className = "peers-empty";
+          empty.textContent = "You're alone — click Share to invite someone";
+          peersEl.appendChild(empty);
+          if (!isTest) shareBtn.classList.add("solo");
+          return;
+        }
+        if (!isTest) shareBtn.classList.remove("solo");
+        for (const [clientId, hue] of peers) {
+          const a = document.createElement("span");
+          a.className = "peer";
+          a.style.setProperty("--peer-color", `hsl(${hue} 70% 55%)`);
+          a.textContent = SyncwellDemo.peerName(clientId, protocolId);
+          peersEl.appendChild(a);
+        }
+      }
+
+      // --- wiring ------------------------------------------------------------
+      sw.on("open", () => {
+        st.live();
+        sw.presence({ hue: myHue });
+        renderPeers();
+      });
+      sw.on("close", () => st.offline());
+      sw.on("change", render);
+      sw.on("presence", ({ clientId, data }) => {
+        if (data?.hue != null) {
+          peers.set(clientId, data.hue);
+          renderPeers();
+        }
+      });
+      sw.on("leave", ({ clientId }) => { peers.delete(clientId); renderPeers(); });
+      sw.on("error", (err) => st.error(err));
+
+      async function waitFor(check, timeout = 3000) {
+        const start = performance.now();
+        while (performance.now() - start < timeout) {
+          if (check()) return;
+          await new Promise(requestAnimationFrame);
+        }
+        throw new Error("timed out waiting for test condition");
+      }
+
+      async function runE2E() {
+        const addInput = () => boardEl.querySelector(".col[data-col='todo'] .add input");
+        const addButton = () => boardEl.querySelector(".col[data-col='todo'] .add button");
+        const firstCard = () => boardEl.querySelector(".col[data-col='todo'] .card");
+        const movedCard = () => boardEl.querySelector(".col[data-col='doing'] .card");
+
+        await waitFor(() => addInput() && addButton());
+
+        const input = addInput();
+        input.value = "Browser E2E";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        addButton().click();
+
+        await waitFor(() => firstCard());
+        const card = firstCard();
+        card.focus();
+        card.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+
+        await waitFor(() => movedCard());
+        movedCard().focus();
+        movedCard().dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+
+        await waitFor(() => !boardEl.querySelector(".card"));
+        const overflowOk = document.documentElement.scrollWidth <= window.innerWidth + 1;
+        if (!overflowOk) throw new Error("layout overflow");
+        document.body.dataset.e2e = "pass";
+        statusEl.textContent = "browser e2e passed";
+        statusEl.className = "live";
+      }
+
+      render();
+      renderPeers();
+      sw.connect();
+      if (isTest) {
+        runE2E().catch((err) => {
+          document.body.dataset.e2e = "fail";
+          statusEl.textContent = `browser e2e failed: ${err.message}`;
+          statusEl.className = "";
+          console.error(err);
+        });
+      }
+    </script>
+  </body>
+</html>

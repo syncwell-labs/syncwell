@@ -1,22 +1,260 @@
+/* Syncwell docs — "editorial ink & paper" theme.
+   Serif display headings, ink text on paper, one vermilion accent.
+   No gradient text, no gradient cards. */
+
 :root {
-  --vp-c-brand-1: #2f6bff;
-  --vp-c-brand-2: #2458d8;
-  --vp-c-brand-3: #1c47b3;
-  --vp-c-brand-soft: rgba(47, 107, 255, 0.14);
+  /* ink & paper */
+  --vp-c-bg: #f2eee6;
+  --vp-c-bg-alt: #ebe5d9;
+  --vp-c-bg-soft: #ece5d7;
+  --vp-c-bg-mute: #e9e2d4;
+  --vp-c-bg-elv: #fbf8f1;
+  --vp-c-brand: #a03a22;
+  --vp-c-brand-1: #a03a22;
+  --vp-c-brand-2: #8a3120;
+  --vp-c-brand-3: #6f2718;
+  --vp-c-brand-soft: rgba(160, 58, 34, 0.12);
+  --vp-c-text-1: #1d1a15;
+  --vp-c-text-2: #5c5346;
+  --vp-c-text-3: #8a7f6e;
+  --vp-c-divider: rgba(29, 26, 21, 0.14);
+  --vp-c-gutter: rgba(29, 26, 21, 0.06);
+
+  --vp-button-brand-bg: #1d1a15;
+  --vp-button-brand-text: #f2eee6;
+  --vp-button-brand-hover-bg: #3a342b;
+  --vp-button-brand-border: #1d1a15;
+
+  --vp-font-family-serif: "Iowan Old Style", "Palatino Linotype", Palatino,
+    Charter, Georgia, "Times New Roman", serif;
+
+  --vp-nav-bg-color: rgba(242, 238, 230, 0.92);
+}
+
+html.dark {
+  --vp-c-bg: #17140f;
+  --vp-c-bg-alt: #1d1913;
+  --vp-c-bg-soft: #201c15;
+  --vp-c-bg-mute: #2a241b;
+  --vp-c-bg-elv: #201c15;
+  --vp-c-brand: #d9825e;
+  --vp-c-brand-1: #d9825e;
+  --vp-c-brand-2: #c26f4d;
+  --vp-c-brand-3: #a85a3c;
+  --vp-c-brand-soft: rgba(217, 130, 94, 0.16);
+  --vp-c-text-1: #ece5d5;
+  --vp-c-text-2: #b3a894;
+  --vp-c-text-3: #8a8070;
+  --vp-c-divider: rgba(236, 229, 213, 0.14);
+  --vp-c-gutter: rgba(236, 229, 213, 0.06);
+
+  --vp-button-brand-bg: #ece5d5;
+  --vp-button-brand-text: #17140f;
+  --vp-button-brand-hover-bg: #d9d1bf;
+  --vp-button-brand-border: #ece5d5;
+
+  --vp-nav-bg-color: rgba(23, 20, 15, 0.92);
+}
+
+/* Serif display: hero + doc headings */
+.VPHero .name,
+.VPHero .text,
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3,
+.VPFeature .title {
+  font-family: var(--vp-font-family-serif);
 }
 
 .VPHero .name {
-  background: linear-gradient(120deg, #2f6bff, #52b7ff 60%, #8f7bff);
-  -webkit-background-clip: text;
-  background-clip: text;
+  color: var(--vp-c-brand-1);
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 
+/* global polish */
+::selection { background: var(--vp-c-brand-soft); }
+::placeholder { color: var(--vp-c-text-3); opacity: 1; }
+:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 2px; }
+:root, html.dark { accent-color: var(--vp-c-brand-1); }
+
+.VPHero .text {
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.12;
+}
+
+.VPHero .tagline {
+  font-family: var(--vp-font-family-serif);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.VPHero .image { width: 104px; }
+.VPHero .image img { width: 104px; height: 104px; }
+
+.vp-doc h1 { font-weight: 600; letter-spacing: -0.012em; }
+.vp-doc h2 { font-weight: 600; letter-spacing: -0.008em; border-top: none; }
+
+/* flat hairline feature cards */
 .VPFeature {
   border: 1px solid var(--vp-c-divider);
-  background: linear-gradient(160deg, var(--vp-c-bg-soft), var(--vp-c-bg));
+  border-radius: 6px;
+  background: transparent;
 }
+.VPFeature .title { font-weight: 700; font-size: 17px; }
+
+/* code blocks: paper panels */
+.vp-doc div[class*="language-"] {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  background: var(--vp-c-bg-soft) !important;
+}
+
+/* small-caps section labels on home */
+.vp-doc h2 { position: relative; }
 
 .vp-doc table {
   display: table;
   width: 100%;
+}
+
+/* WCAG AA for code blocks: GitHub's shiki token colors were tuned for pure
+   white/black, so remap the ones that miss 4.5:1 on our paper backgrounds.
+   (Author !important beats the inline custom properties shiki emits.) */
+.vp-doc div[class*="language-"] > .lang {
+  color: #5c5346;
+}
+html.dark .vp-doc div[class*="language-"] > .lang {
+  color: #b3a894;
+}
+/* keyword red — darken the light-scheme token */
+.vp-doc code span[style*="--shiki-light:#D73A49"] {
+  --shiki-light: #b82a1e !important;
+}
+/* comment grey — darker on paper, lighter on the dark panels */
+.vp-doc code span[style*="--shiki-light:#6A737D"][style*="--shiki-dark:#6A737D"] {
+  --shiki-light: #565f6b !important;
+  --shiki-dark: #98a2b0 !important;
+}
+/* attribute / orange — darken the light-scheme token */
+.vp-doc code span[style*="--shiki-light:#E36209"] {
+  --shiki-light: #a84a00 !important;
+}
+
+/* The shortcut hint lives in the placeholder/aria-label instead (see
+   config.mts translations): the CSS keycaps render "Ctrl" via ::after, which
+   is visible but never part of the accessible name (axe
+   label-content-name-mismatch). */
+.DocSearch .DocSearch-Button-Keys {
+  display: none !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Motion — small, editorial, never bouncy.
+   Entrance: 8px rise + fade. Hover: 150–200ms colour/shift only.
+   Everything is disabled under prefers-reduced-motion.
+   ------------------------------------------------------------------------- */
+@keyframes sw-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+
+  /* hero: staggered, quiet entrance */
+  .VPHero .name,
+  .VPHero .text,
+  .VPHero .tagline,
+  .VPHero .actions,
+  .VPHero .image {
+    animation: sw-rise 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+  .VPHero .text    { animation-delay: 0.05s; }
+  .VPHero .tagline { animation-delay: 0.1s; }
+  .VPHero .actions { animation-delay: 0.15s; }
+  .VPHero .image   { animation-delay: 0.02s; }
+  .VPHero .image img { animation: sw-fade-in 0.7s ease-out both; }
+
+  /* feature cards: rise in, lightly staggered */
+  .VPFeatures .item {
+    animation: sw-rise 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+  .VPFeatures .item:nth-child(2) { animation-delay: 0.04s; }
+  .VPFeatures .item:nth-child(3) { animation-delay: 0.08s; }
+  .VPFeatures .item:nth-child(4) { animation-delay: 0.12s; }
+  .VPFeatures .item:nth-child(5) { animation-delay: 0.16s; }
+  .VPFeatures .item:nth-child(6) { animation-delay: 0.2s; }
+
+  /* doc pages: content eases in once per navigation */
+  .VPDoc .content {
+    animation: sw-rise 0.35s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+
+  /* hovers */
+  .VPNavBarMenuLink,
+  .VPNavBarMenuGroup .text,
+  .VPNavBarTitle .title,
+  .VPSidebarItem .link .text,
+  .VPDocAsideOutline .outline-link,
+  .vp-doc a,
+  .VPFooter a {
+    transition: color 0.16s ease;
+  }
+  .VPNavBarMenuLink:hover,
+  .VPNavBarMenuGroup:hover .text,
+  .VPSidebarItem.is-link .link:hover .text,
+  .VPDocAsideOutline .outline-link:hover,
+  .vp-doc a:hover,
+  .VPFooter a:hover {
+    color: var(--vp-c-brand-1);
+  }
+
+  .VPFeature {
+    transition: border-color 0.2s ease, background-color 0.2s ease,
+      transform 0.2s ease;
+  }
+  .VPFeature:hover {
+    border-color: var(--vp-c-brand-1);
+    background: var(--vp-c-bg-elv);
+    transform: translateY(-2px);
+  }
+
+  .VPButton {
+    transition: background-color 0.16s ease, color 0.16s ease,
+      border-color 0.16s ease, transform 0.16s ease;
+  }
+  .VPButton:hover { transform: translateY(-1px); }
+  .VPButton:active { transform: translateY(0); }
+
+  .vp-doc a { text-underline-offset: 2px; }
+  .vp-doc a:hover { text-underline-offset: 3px; }
+
+  .DocSearch-Button {
+    transition: border-color 0.16s ease, background-color 0.16s ease;
+  }
+  .DocSearch-Button:hover {
+    border-color: var(--vp-c-brand-1);
+    background: var(--vp-c-bg-elv);
+  }
+
+  /* code copy button + table rows */
+  .vp-doc div[class*="language-"] > button.copy {
+    transition: opacity 0.15s ease, color 0.15s ease;
+  }
+  .vp-doc tr { transition: background-color 0.15s ease; }
+}
+
+@keyframes sw-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }

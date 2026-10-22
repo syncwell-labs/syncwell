@@ -320,7 +320,7 @@ func (r *Room) noteClock(cl *Client, counter uint64) {
 // (Lamport counters only increase), so tombstones older than it are safe to GC.
 // Returns 0 (GC disabled) whenever a client has not yet revealed its clock, which
 // keeps the bound conservative while clients are catching up. The known limit:
-// a client offline longer than a GC cycle is not counted — see DESIGN.md §4.
+// a client offline longer than a GC cycle is not counted — see docs/architecture/DESIGN.md §4.
 func (r *Room) lowWater() uint64 {
 	if len(r.acked) == 0 {
 		return 0
@@ -867,23 +867,23 @@ type Config struct {
 // (no ClusterPeers) is always valid.
 func (c Config) Validate() error {
 	if c.Secret == "" && len(c.PreviousSecrets) > 0 {
-		return errors.New("-secret-previous requires -secret")
+		return errors.New("-secret-previous requires -secret (or SYNCWELL_SECRET_PREVIOUS requires SYNCWELL_SECRET)")
 	}
 	if _, err := parseCIDRs(c.AdminAllowlist); err != nil {
-		return fmt.Errorf("-admin-allowlist: %w", err)
+		return fmt.Errorf("-admin-allowlist (SYNCWELL_ADMIN_ALLOWLIST): %w", err)
 	}
 	if _, err := parseCIDRs(c.ClusterAllowlist); err != nil {
-		return fmt.Errorf("-cluster-allowlist: %w", err)
+		return fmt.Errorf("-cluster-allowlist (SYNCWELL_CLUSTER_ALLOWLIST): %w", err)
 	}
 	if len(c.ClusterPeers) == 0 {
 		return nil
 	}
 	id := strings.TrimSpace(c.NodeID)
 	if id == "" || id == "local" {
-		return errors.New("clustering requires -node-id set to a unique value (not the default \"local\")")
+		return errors.New("clustering requires -node-id set to a unique value (SYNCWELL_NODE_ID; not the default \"local\")")
 	}
 	if c.Secret != "" && c.AdminToken == "" {
-		return errors.New("clustering with -secret requires -admin-token so peers can authenticate")
+		return errors.New("clustering with -secret requires -admin-token (SYNCWELL_ADMIN_TOKEN) so peers can authenticate")
 	}
 	return nil
 }

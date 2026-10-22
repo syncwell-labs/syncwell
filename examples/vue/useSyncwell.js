@@ -2,7 +2,8 @@
 //
 //   const { state, status, peers, set, undo, redo } = useSyncwell({...});
 //
-// Install: npm i vue syncwell-client
+// Install: npm i vue, then install this repo's clients/javascript/ as syncwell-client
+// (see examples/README.md)
 import { onUnmounted, ref, shallowRef } from "vue";
 import { Syncwell } from "syncwell-client";
 import { Awareness } from "syncwell-client/awareness";

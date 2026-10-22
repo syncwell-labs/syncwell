@@ -16,7 +16,7 @@
 - [ ] `make test-python` passes for client/server changes, or is not affected
 - [ ] `make docs-build` passes for docs/website changes, or is not affected
 - [ ] Added or updated tests for the change
-- [ ] Protocol/CRDT changes follow `docs/PROTOCOL_COMPATIBILITY.md` (or are not affected)
+- [ ] Protocol/CRDT changes follow `docs/protocol/PROTOCOL_COMPATIBILITY.md` (or are not affected)
 - [ ] Updated docs (README / docs/) where behavior or configuration changed
 - [ ] No secrets, tokens, or private data in the diff
 

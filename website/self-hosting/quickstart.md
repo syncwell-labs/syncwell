@@ -2,14 +2,22 @@
 
 ## Docker
 
+Until the GHCR image is published with a release, build it locally:
+
 ```bash
+git clone https://github.com/Nil-Vaghani/syncwell && cd syncwell
+make docker                                   # tags syncwell:latest
+mkdir -p data && sudo chown 65532:65532 data  # the image runs as uid 65532
 docker run --rm -p 8080:8080 \
   -e SYNCWELL_SECRET="$(openssl rand -hex 32)" \
   -e SYNCWELL_ADMIN_TOKEN="$(openssl rand -hex 32)" \
   -v "$PWD/data:/data" \
-  ghcr.io/nil-vaghani/syncwell:latest \
+  syncwell:latest \
   -data /data
 ```
+
+When releases are live the same command works with
+`ghcr.io/nil-vaghani/syncwell:latest` instead of `syncwell:latest`.
 
 The runtime image is distroless and runs as a non-root user. Mount `/data` as a
 writable volume owned by uid/gid `65532` (the image's `nonroot` user).
@@ -18,8 +26,10 @@ writable volume owned by uid/gid `65532` (the image's `nonroot` user).
 
 ```bash
 cp .env.example .env
-# fill SYNCWELL_SECRET and SYNCWELL_ADMIN_TOKEN
-docker compose up -d
+# fill SYNCWELL_SECRET and SYNCWELL_ADMIN_TOKEN (openssl rand -hex 32)
+docker compose up -d --build
+docker compose run --rm syncwell -mint demo   # room token for the demo pages
+# open http://localhost:8080/?room=demo&token=<token>
 ```
 
 ## Binary or Go
@@ -32,8 +42,9 @@ go build -o bin/syncwell ./cmd/syncwell
   -origins https://app.example.com
 ```
 
-Released archives (Linux/macOS/Windows, amd64/arm64) include checksums and SPDX
-SBOMs; see the repository's releases page.
+Once a release is tagged, archives (Linux/macOS/Windows, amd64/arm64) attach to
+the repository's releases page with checksums and SPDX SBOMs; until then build
+from source as above.
 
 ## TLS
 

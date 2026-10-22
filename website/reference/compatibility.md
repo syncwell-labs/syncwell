@@ -1,7 +1,7 @@
 # Compatibility policy
 
 The v1 wire protocol was **frozen on 2026-10-20**. The full, normative policy is
-[`docs/PROTOCOL_COMPATIBILITY.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/PROTOCOL_COMPATIBILITY.md).
+[`docs/protocol/PROTOCOL_COMPATIBILITY.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/protocol/PROTOCOL_COMPATIBILITY.md).
 This page summarizes the rules.
 
 ## Version negotiation

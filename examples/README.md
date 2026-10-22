@@ -5,9 +5,14 @@ local replica, and write optimistically. The SDK handles reconnects, offline
 merging, persistence, undo/redo, and awareness.
 
 These are copy-paste files, not scaffolded apps — drop the relevant file into
-your project. The SDK is served by the engine at `/sdk/` (or copy the `sdk/`
-directory from this repo; `npm install syncwell-client` works once the package
-is published).
+your project. The SDK is served by the engine at `/sdk/`, or install it into
+your own bundle: `syncwell-client` is this repo's [`clients/javascript/`](../clients/javascript) package, so
+install it from the repo until it is published to npm:
+
+```bash
+cd clients/javascript && npm install && npm run build && cd ..   # build once (dist/ is not committed)
+npm install ./clients/javascript                                  # or "syncwell-client": "file:./clients/javascript" in package.json
+```
 
 | Example | File | Needs |
 | --- | --- | --- |
@@ -18,5 +23,5 @@ is published).
 | Node server | [`node/server.js`](node/server.js) | Node 22+ |
 
 The vanilla page needs the SDK served at `/sdk/`; run it from a syncwell
-server's static root or copy `sdk/` next to it. The Svelte store exposes
+server's static root or copy `clients/javascript/` next to it. The Svelte store exposes
 `destroy()`; call it from `onDestroy`.

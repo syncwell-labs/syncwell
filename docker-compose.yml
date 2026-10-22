@@ -1,9 +1,10 @@
 # Self-host template: `cp .env.example .env`, set the two secrets, then
-# `docker compose up -d`. The image is distroless and runs as uid 65532, so the
-# init service chowns the named volume once before the server starts.
-# Mint a room token for the demo pages with the same secret:
+# `docker compose up -d --build` (builds the local image `syncwell:local`; the
+# GHCR image is not published yet). The image is distroless and runs as uid
+# 65532, so the init service chowns the named volume once before the server
+# starts. Mint a room token for the demo pages with the same secret:
 #   docker compose run --rm syncwell -mint demo
-# then open http://localhost:8080/?token=<token>
+# then open http://localhost:8080/?room=demo&token=<token>
 services:
   init:
     image: busybox:stable
@@ -14,7 +15,7 @@ services:
 
   syncwell:
     build: .
-    image: ghcr.io/nil-vaghani/syncwell:latest
+    image: syncwell:local
     depends_on:
       init:
         condition: service_completed_successfully

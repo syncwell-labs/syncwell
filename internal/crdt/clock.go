@@ -5,7 +5,7 @@ package crdt
 // are broken by comparing Node strings. This yields a *total order* over all
 // writes in the cluster without requiring synchronized wall clocks.
 //
-// Trade-off (see DESIGN.md): because ordering is causal, not wall-clock based,
+// Trade-off (see docs/architecture/DESIGN.md): because ordering is causal, not wall-clock based,
 // "last writer wins" means "last in causal order," which can differ from real
 // time when two replicas edit while partitioned. This is the deliberate,
 // documented cost of avoiding clock-skew bugs.

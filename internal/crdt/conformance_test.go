@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// These fixtures are shared with the JS SDK (sdk/conformance.test.mjs). Both
+// These fixtures are shared with the JS SDK (clients/javascript/conformance.test.js). Both
 // implementations must resolve every tie identically, otherwise two replicas
 // that see the same two writes in different orders would diverge.
 type confRegister struct {
@@ -37,7 +37,7 @@ func (c confRegister) register(t *testing.T) Register {
 }
 
 func TestConformanceFixtures(t *testing.T) {
-	path := filepath.Join("..", "..", "test", "conformance", "tiebreak_cases.json")
+	path := filepath.Join("..", "..", "tests", "conformance", "tiebreak_cases.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read fixtures: %v", err)

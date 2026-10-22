@@ -5,10 +5,10 @@ data
 *.log
 *.tmp
 node_modules
-docs/BENCHMARKS.md
-PLAN.md
-sdk/node_modules
-sdk/dist
+docs/product/BENCHMARKS.md
+docs/product/PLAN.md
+clients/javascript/node_modules
+clients/javascript/dist
 /dist/
 
 website/.vitepress/dist

@@ -58,5 +58,5 @@ sw.on("change", (live) => mirror(live));
 
 See [`examples/`](https://github.com/Nil-Vaghani/syncwell/tree/main/examples)
 for the full files, and
-[`python/`](https://github.com/Nil-Vaghani/syncwell/tree/main/python) for the
+[`clients/python/`](https://github.com/Nil-Vaghani/syncwell/tree/main/clients/python) for the
 dependency-free Python client.

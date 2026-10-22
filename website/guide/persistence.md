@@ -3,7 +3,9 @@
 Local edits always stay in memory. Persistence adds a durable local replica so a
 reload keeps offline edits, the Lamport clock, dirty keys, and undo/redo stacks.
 
-Use a stable `clientId`; otherwise a reload looks like a new replica.
+Use a stable `clientId`; otherwise a reload looks like a new replica. Snippets
+import `syncwell-client`; until the package is published, copy `clients/javascript/` or import
+from your server's `/sdk/` mount.
 
 ## Browser: localStorage
 

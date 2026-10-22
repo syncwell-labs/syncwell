@@ -33,12 +33,12 @@ Run the real-server E2E test:
 
 ```bash
 make test-python
-# or
-python3 -m unittest python/test_client_e2e.py -v
+# or, after a `make build` (the test reuses bin/syncwell and builds nothing):
+python3 -m unittest clients/python/test_client_e2e.py -v
 ```
 
 The test starts the Go server on `127.0.0.1:8131`, converges two Python clients,
 disconnects one, edits offline, and verifies the reconnect merge.
 
 Source and full API:
-[`python/`](https://github.com/Nil-Vaghani/syncwell/tree/main/python).
+[`clients/python/`](https://github.com/Nil-Vaghani/syncwell/tree/main/clients/python).

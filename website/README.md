@@ -9,6 +9,8 @@ make docs-build    # production build in website/.vitepress/dist
 
 The build defaults to a root base. The Pages workflow sets
 `DOCS_BASE=/syncwell/`; override it for a custom domain (`DOCS_BASE=/`).
+`DOCS_ORIGIN` (default `https://nil-vaghani.github.io`) feeds the sitemap
+and robots.txt URLs — set it when hosting elsewhere.
 
 Content map:
 

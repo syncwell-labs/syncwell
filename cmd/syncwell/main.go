@@ -9,8 +9,10 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -26,10 +28,113 @@ import (
 	"syncwell/internal/version"
 )
 
+// envKeysSeen records the environment variables consulted for flag defaults,
+// so -help can annotate each flag with its real env equivalent.
+var envKeysSeen = map[string]bool{}
+
+func noteEnv(key string) { envKeysSeen[key] = true }
+
+// flagGroups orders -help output by task instead of alphabetically.
+var flagGroups = []struct {
+	title string
+	names []string
+}{
+	{"Core / server", []string{"addr", "data", "origins", "insecure", "static", "sdk", "version"}},
+	{"Auth & room tokens", []string{"secret", "secret-previous", "admin-token", "revoked-jtis", "oidc-issuer", "oidc-audience", "oidc-jwks", "oidc-room-claim", "oidc-caps-claim", "oidc-refresh"}},
+	{"Rate limits & network trust", []string{"admin-rate", "admin-burst", "admin-max-failures", "admin-lockout", "admin-allowlist", "ws-rate", "cluster-rate", "cluster-allowlist", "trust-proxy", "proxy-hops"}},
+	{"Capacity limits", []string{"max-clients", "max-rooms", "idle-room-ttl", "max-message-bytes", "max-room-id-bytes", "max-key-bytes", "max-node-bytes", "max-value-bytes", "max-presence-bytes", "max-state-entries", "max-messages-per-second", "compact"}},
+	{"Durability & backup", []string{"fsync", "fsync-interval", "max-log-bytes", "backup", "restore", "verify-backup"}},
+	{"Clustering", []string{"node-id", "node-peers", "cluster-peers", "cluster-path", "anti-entropy"}},
+	{"Webhooks & tracing", []string{"webhook-urls", "webhook-secret", "webhook-timeout", "webhook-queue", "otel-endpoint", "otel-insecure", "otel-headers", "otel-sample-rate", "otel-service-name"}},
+	{"Token minting (prints a token and exits)", []string{"mint", "mint-sub", "mint-caps", "mint-jti", "mint-iat", "mint-nbf", "ttl"}},
+}
+
+// usage replaces the stock flag dump with a grouped help screen that leads
+// with the quickstart and shows env equivalents.
+func usage() {
+	out := flag.CommandLine.Output()
+	fmt.Fprint(out, `syncwell — real-time collaboration server
+
+Usage:
+  syncwell [flags]               start the server
+  syncwell -secret S -mint ROOM  print a room token and exit
+
+Quickstart:
+  syncwell -addr 127.0.0.1:8080  run the demo at http://localhost:8080
+                                 (loopback bind = no credentials needed)
+
+Flags marked (env NAME) can also be set through that environment variable.
+
+`)
+	seen := map[string]bool{}
+	for _, g := range flagGroups {
+		var flags []*flag.Flag
+		for _, name := range g.names {
+			if f := flag.CommandLine.Lookup(name); f != nil {
+				flags = append(flags, f)
+				seen[name] = true
+			}
+		}
+		if len(flags) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "%s:\n", g.title)
+		for _, f := range flags {
+			printFlag(out, f)
+		}
+		fmt.Fprintln(out)
+	}
+	var rest []*flag.Flag
+	flag.CommandLine.VisitAll(func(f *flag.Flag) {
+		if !seen[f.Name] {
+			rest = append(rest, f)
+		}
+	})
+	if len(rest) > 0 {
+		fmt.Fprintf(out, "Other flags:\n")
+		for _, f := range rest {
+			printFlag(out, f)
+		}
+	}
+}
+
+func printFlag(out io.Writer, f *flag.Flag) {
+	typ, usageStr := flag.UnquoteUsage(f)
+	if env := envVarForFlag(f.Name); env != "" {
+		usageStr += " (env " + env + ")"
+	}
+	if def := defaultSuffix(f.DefValue); def != "" {
+		usageStr += def
+	}
+	if typ != "" && typ != "bool" {
+		fmt.Fprintf(out, "  -%s %s\n      %s\n", f.Name, typ, usageStr)
+	} else {
+		fmt.Fprintf(out, "  -%s\n      %s\n", f.Name, usageStr)
+	}
+}
+
+// envVarForFlag derives the SYNCWELL_* name by convention and confirms the
+// flag actually consults it (the env helpers register every key they read).
+func envVarForFlag(name string) string {
+	key := "SYNCWELL_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	if envKeysSeen[key] {
+		return key
+	}
+	return ""
+}
+
+func defaultSuffix(def string) string {
+	if def == "" || def == "false" || def == "0" || def == "0s" {
+		return ""
+	}
+	return " (default " + def + ")"
+}
+
 func main() {
+	flag.Usage = usage
 	addr := flag.String("addr", envOr("SYNCWELL_ADDR", ":"+envOr("PORT", "8080")), "listen address")
-	static := flag.String("static", "demo", "directory of static files to serve at / (skipped if missing)")
-	sdk := flag.String("sdk", "sdk", "directory of the client SDK to serve at /sdk/ (skipped if missing)")
+	static := flag.String("static", envOr("SYNCWELL_STATIC", "examples/demos"), "directory of static files to serve at / (skipped if missing)")
+	sdk := flag.String("sdk", envOr("SYNCWELL_SDK", "clients/javascript"), "directory of the client SDK to serve at /sdk/ (skipped if missing)")
 	data := flag.String("data", envOr("SYNCWELL_DATA", ""), "data directory for persistence (empty = in-memory)")
 	fsyncMode := flag.String("fsync", envOr("SYNCWELL_FSYNC", "batch"), "durability: os (fastest), batch (default), every (power-loss safe)")
 	fsyncInterval := flag.Duration("fsync-interval", envDuration("SYNCWELL_FSYNC_INTERVAL", 5*time.Millisecond), "batch fsync interval")
@@ -37,7 +142,7 @@ func main() {
 	backupDir := flag.String("backup", "", "copy -data into this directory with a checksummed manifest and exit")
 	restoreDir := flag.String("restore", "", "verify this backup directory and restore it into -data, then exit")
 	verifyBackupDir := flag.String("verify-backup", "", "verify a backup directory and exit")
-	compact := flag.Int("compact", 256, "winning writes between maintenance passes (tombstone GC + compaction)")
+	compact := flag.Int("compact", envInt("SYNCWELL_COMPACT", 256), "winning writes between maintenance passes (tombstone GC + compaction)")
 	secret := flag.String("secret", envOr("SYNCWELL_SECRET", ""), "HMAC secret for room tokens (empty on a public bind = generated once)")
 	secretPrevious := flag.String("secret-previous", envOr("SYNCWELL_SECRET_PREVIOUS", ""), "comma-separated old secrets still accepted for token verification (rotation)")
 	adminToken := flag.String("admin-token", envOr("SYNCWELL_ADMIN_TOKEN", ""), "bearer token for operational endpoints like /stats (empty on a public bind = generated once)")
@@ -68,11 +173,11 @@ func main() {
 	maxRooms := flag.Int("max-rooms", envInt("SYNCWELL_MAX_ROOMS", 10000), "max live rooms before new rooms are refused (0 = unlimited, negative = default 10000)")
 	idleRoomTTL := flag.Duration("idle-room-ttl", envDuration("SYNCWELL_IDLE_ROOM_TTL", 0), "evict empty rooms after this idle period (0 = default 60s, negative = disabled)")
 	maxMessageBytes := flag.Int("max-message-bytes", envInt("SYNCWELL_MAX_MESSAGE_BYTES", 0), "max websocket message bytes (0 = default)")
-	maxRoomIDBytes := flag.Int("max-room-id-bytes", 0, "max room id bytes (0 = default)")
-	maxKeyBytes := flag.Int("max-key-bytes", 0, "max document key bytes (0 = default)")
-	maxNodeBytes := flag.Int("max-node-bytes", 0, "max client node id bytes (0 = default)")
-	maxValueBytes := flag.Int("max-value-bytes", 0, "max register JSON value bytes (0 = default)")
-	maxPresenceBytes := flag.Int("max-presence-bytes", 0, "max presence JSON bytes (0 = default)")
+	maxRoomIDBytes := flag.Int("max-room-id-bytes", envInt("SYNCWELL_MAX_ROOM_ID_BYTES", 0), "max room id bytes (0 = default)")
+	maxKeyBytes := flag.Int("max-key-bytes", envInt("SYNCWELL_MAX_KEY_BYTES", 0), "max document key bytes (0 = default)")
+	maxNodeBytes := flag.Int("max-node-bytes", envInt("SYNCWELL_MAX_NODE_BYTES", 0), "max client node id bytes (0 = default)")
+	maxValueBytes := flag.Int("max-value-bytes", envInt("SYNCWELL_MAX_VALUE_BYTES", 0), "max register JSON value bytes (0 = default)")
+	maxPresenceBytes := flag.Int("max-presence-bytes", envInt("SYNCWELL_MAX_PRESENCE_BYTES", 0), "max presence JSON bytes (0 = default)")
 	maxStateEntries := flag.Int("max-state-entries", envInt("SYNCWELL_MAX_STATE_ENTRIES", 0), "max registers accepted in one merge frame (0 = default)")
 	maxMessagesPerSecond := flag.Int("max-messages-per-second", envInt("SYNCWELL_MAX_MESSAGES_PER_SECOND", 0), "max websocket messages per client per second (0 = default)")
 	nodeID := flag.String("node-id", envOr("SYNCWELL_NODE_ID", ""), "unique node id (required when clustering)")
@@ -102,13 +207,13 @@ func main() {
 		return
 	}
 	if (*tlsCert == "") != (*tlsKey == "") {
-		log.Fatal("-tls-cert and -tls-key must be provided together")
+		log.Fatal("-tls-cert and -tls-key must be provided together (or SYNCWELL_TLS_CERT and SYNCWELL_TLS_KEY)")
 	}
 
 	// Token-minting helper: `syncwell -secret S -mint room` prints a token.
 	if *mint != "" {
 		if *secret == "" {
-			log.Fatal("-mint requires -secret")
+			log.Fatal("-mint requires -secret or SYNCWELL_SECRET")
 		}
 		iat := *mintIAT
 		if iat == 0 {
@@ -133,7 +238,7 @@ func main() {
 	}
 	if *restoreDir != "" {
 		if *data == "" {
-			log.Fatal("-restore requires -data")
+			log.Fatal("-restore requires -data or SYNCWELL_DATA")
 		}
 		m, err := store.Restore(*restoreDir, *data)
 		if err != nil {
@@ -144,7 +249,7 @@ func main() {
 	}
 	if *backupDir != "" {
 		if *data == "" {
-			log.Fatal("-backup requires -data")
+			log.Fatal("-backup requires -data or SYNCWELL_DATA")
 		}
 		fs, err := store.Open(*data)
 		if err != nil {
@@ -161,6 +266,7 @@ func main() {
 		return
 	}
 
+	secretGenerated := false
 	if publicBind(*addr) && !*insecure {
 		if *secret == "" {
 			generated, err := randomSecret()
@@ -168,6 +274,7 @@ func main() {
 				log.Fatalf("generate auth secret: %v", err)
 			}
 			*secret = generated
+			secretGenerated = true
 			// Print the credential to stderr for the operator starting the
 			// process, but keep only a fingerprint in the structured log so
 			// log aggregation never becomes a credential store.
@@ -195,6 +302,8 @@ func main() {
 			})
 		}
 	} else if publicBind(*addr) && *insecure && (*secret == "" || *adminToken == "") {
+		fmt.Fprintf(os.Stderr, "\n** INSECURE MODE (-insecure): public bind with no room/admin auth **\n"+
+			"** anyone who can reach this address can read and write every room — never expose it to the internet **\n\n")
 		server.LogEvent("insecure_public_bind", map[string]any{
 			"room_auth":  *secret != "",
 			"admin_auth": *adminToken != "",
@@ -321,7 +430,7 @@ func main() {
 			server.LogEvent("oidc_enabled", map[string]any{"issuer": *oidcIssuer, "audience": *oidcAudience, "room_claim": *oidcRoomClaim, "caps_claim": *oidcCapsClaim})
 		}
 	} else if *oidcAudience != "" || *oidcJWKS != "" {
-		log.Fatal("-oidc-audience/-oidc-jwks require -oidc-issuer")
+		log.Fatal("-oidc-audience/-oidc-jwks require -oidc-issuer (or SYNCWELL_OIDC_ISSUER)")
 	}
 	cfg.OIDC = oidcVerifier
 	if err := cfg.Validate(); err != nil {
@@ -352,6 +461,46 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/readyz", hub.ServeReady)
+	// Demo helper: list non-loopback IPv4 addresses so the share UI can offer
+	// phone-friendly URLs when the page was opened via localhost.
+	mux.HandleFunc("/demo/lan", func(w http.ResponseWriter, _ *http.Request) {
+		type lanResponse struct {
+			Addresses []string `json:"addresses"`
+		}
+		resp := lanResponse{Addresses: []string{}}
+		// Only enumerate interface addresses for loopback binds. A public
+		// server must not disclose its private network topology to any
+		// unauthenticated visitor; the share UI hides the empty list.
+		if !publicBind(*addr) {
+			ifaces, err := net.Interfaces()
+			if err == nil {
+				for _, iface := range ifaces {
+					if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+						continue
+					}
+					addrs, addErr := iface.Addrs()
+					if addErr != nil {
+						continue
+					}
+					for _, a := range addrs {
+						var ip net.IP
+						switch v := a.(type) {
+						case *net.IPNet:
+							ip = v.IP
+						case *net.IPAddr:
+							ip = v.IP
+						}
+						if ip4 := ip.To4(); ip4 != nil && !ip4.IsLoopback() {
+							resp.Addresses = append(resp.Addresses, ip4.String())
+						}
+					}
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
 	// Serve the client SDK at /sdk/ so the demo can import it with an absolute
 	// path regardless of where the static root is.
 	if _, err := os.Stat(*sdk); err == nil {
@@ -390,6 +539,7 @@ func main() {
 		scheme = "https"
 	}
 	server.LogEvent("startup", map[string]any{"version": version.String(), "addr": *addr, "scheme": scheme, "websocket": "/ws?room=ID"})
+	printStartupBanner(scheme, *addr, *static, *data, *secret != "", secretGenerated)
 	var serveErr error
 	if *tlsCert != "" {
 		server.LogEvent("tls_enabled", map[string]any{"cert": *tlsCert, "min_version": "1.2"})
@@ -402,7 +552,46 @@ func main() {
 	}
 }
 
+// printStartupBanner writes the human-readable "what do I do now" summary to
+// stderr; the structured JSON log stays machine-only.
+func printStartupBanner(scheme, addr, staticDir, dataDir string, authOn, secretGenerated bool) {
+	base := displayURL(scheme, addr)
+	fmt.Fprintf(os.Stderr, "%s listening on %s\n", version.String(), base)
+	if _, err := os.Stat(staticDir); err == nil {
+		if authOn {
+			hint := "syncwell -mint demo"
+			if secretGenerated {
+				hint = "syncwell -secret <secret printed above> -mint demo"
+			}
+			fmt.Fprintf(os.Stderr, "  demos:    %s/ — room token required; mint one: %s\n", base, hint)
+		} else {
+			fmt.Fprintf(os.Stderr, "  demos:    %s/ — open in two windows to collaborate (no token needed)\n", base)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "  demos:    not served (no %q directory)\n", staticDir)
+	}
+	if dataDir == "" {
+		fmt.Fprintf(os.Stderr, "  storage:  in-memory — pass -data DIR (or SYNCWELL_DATA) to survive restarts\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "  storage:  %s\n", dataDir)
+	}
+}
+
+// displayURL renders a browser-friendly URL for addr: empty and wildcard hosts
+// become localhost so the printed link is clickable.
+func displayURL(scheme, addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return scheme + "://" + addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || strings.EqualFold(host, "localhost") {
+		host = "localhost"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
 func envOr(key, def string) string {
+	noteEnv(key)
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
@@ -410,31 +599,59 @@ func envOr(key, def string) string {
 }
 
 func envFloat(key string, def float64) float64 {
-	if v, err := strconv.ParseFloat(os.Getenv(key), 64); err == nil {
-		return v
+	noteEnv(key)
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
 	}
-	return def
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		log.Printf("warning: %s=%q is not a number — using default %v", key, raw, def)
+		return def
+	}
+	return v
 }
 
 func envInt(key string, def int) int {
-	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
-		return v
+	noteEnv(key)
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
 	}
-	return def
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("warning: %s=%q is not an integer — using default %d", key, raw, def)
+		return def
+	}
+	return v
 }
 
 func envInt64(key string, def int64) int64 {
-	if v, err := strconv.ParseInt(os.Getenv(key), 10, 64); err == nil {
-		return v
+	noteEnv(key)
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
 	}
-	return def
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		log.Printf("warning: %s=%q is not an integer — using default %d", key, raw, def)
+		return def
+	}
+	return v
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
-	if v, err := time.ParseDuration(os.Getenv(key)); err == nil {
-		return v
+	noteEnv(key)
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
 	}
-	return def
+	v, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("warning: %s=%q is not a duration (use e.g. 5ms, 30s, 2m) — using default %s", key, raw, def)
+		return def
+	}
+	return v
 }
 
 func splitList(s string) []string {
@@ -448,10 +665,17 @@ func splitList(s string) []string {
 }
 
 func envBool(key string, def bool) bool {
-	if v, err := strconv.ParseBool(os.Getenv(key)); err == nil {
-		return v
+	noteEnv(key)
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
 	}
-	return def
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Printf("warning: %s=%q is not a boolean (use true/false or 1/0) — using default %v", key, raw, def)
+		return def
+	}
+	return v
 }
 
 // publicBind reports whether addr accepts connections from outside this host.

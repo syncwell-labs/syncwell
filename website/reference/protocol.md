@@ -2,7 +2,7 @@
 
 Syncwell uses one WebSocket per client and small JSON text frames. The normative
 v1 reference is
-[`docs/PROTOCOL.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/PROTOCOL.md);
+[`docs/protocol/PROTOCOL.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/protocol/PROTOCOL.md);
 this page is the fast orientation.
 
 ```text

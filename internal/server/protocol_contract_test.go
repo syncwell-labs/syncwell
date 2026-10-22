@@ -4,7 +4,7 @@ import "testing"
 
 // Protocol v1 is a public compatibility contract. Changing this constant (or
 // the wire semantics it guards) requires a new protocol version, a major
-// release, and an update to docs/PROTOCOL_COMPATIBILITY.md.
+// release, and an update to docs/protocol/PROTOCOL_COMPATIBILITY.md.
 func TestProtocolVersionIsFrozen(t *testing.T) {
 	const frozen = 1
 	if protocolVersion != frozen {

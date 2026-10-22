@@ -4,7 +4,8 @@
 //   $room.state, $room.status, $room.peers
 //   room.set("title", "hello"); room.undo();
 //
-// Install: npm i svelte syncwell-client
+// Install: npm i svelte, then install this repo's clients/javascript/ as syncwell-client
+// (see examples/README.md)
 import { writable } from "svelte/store";
 import { Syncwell } from "syncwell-client";
 import { Awareness } from "syncwell-client/awareness";

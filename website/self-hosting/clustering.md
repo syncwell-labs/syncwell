@@ -47,4 +47,4 @@ relay requests with it.
 - Do not run multiple nodes without a shared admin token or with a diverging
   room dataset.
 
-See `docs/DEPLOY.md` and `docs/OPERATIONS.md` for the operational checklist.
+See `docs/operations/DEPLOY.md` and `docs/operations/OPERATIONS.md` for the operational checklist.

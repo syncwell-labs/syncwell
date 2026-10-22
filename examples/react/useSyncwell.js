@@ -4,7 +4,8 @@
 //     url: "wss://sync.example/ws", room: "notes", clientId: "u1",
 //   });
 //
-// Install: npm i react syncwell-client
+// Install: npm i react, then install this repo's clients/javascript/ as syncwell-client
+// (see examples/README.md)
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Syncwell } from "syncwell-client";
 import { Awareness } from "syncwell-client/awareness";

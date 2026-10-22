@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -21,8 +21,8 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.revision="${COMMIT}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 COPY --from=build --chown=nonroot:nonroot /out/syncwell /syncwell
-COPY --chown=nonroot:nonroot demo /demo
-COPY --chown=nonroot:nonroot sdk/syncwell.js sdk/crdt.js sdk/sequence.js sdk/text.js sdk/awareness.js sdk/storage.js /sdk/
+COPY --chown=nonroot:nonroot examples/demos /demo
+COPY --chown=nonroot:nonroot clients/javascript/syncwell.js clients/javascript/crdt.js clients/javascript/sequence.js clients/javascript/text.js clients/javascript/awareness.js clients/javascript/storage.js /sdk/
 EXPOSE 8080
 USER nonroot:nonroot
 STOPSIGNAL SIGTERM

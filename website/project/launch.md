@@ -5,7 +5,7 @@ irreversible or credentialed steps. Never publish a URL or version before it
 serves traffic.
 
 The full canonical runbook is
-[`docs/LAUNCH.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/LAUNCH.md).
+[`docs/product/LAUNCH.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/product/LAUNCH.md).
 
 ## Order
 
@@ -23,9 +23,9 @@ The full canonical runbook is
    for the status page.
 5. **Deploy docs.** Enable GitHub Pages with **GitHub Actions** source and run
    the Docs workflow. The default base is `/syncwell/`.
-6. **Publish the post and metrics.** Update `docs/BLOG.md` with real URLs, run
-   the benchmark on documented hardware, refresh the README numbers, and remove
-   every "still ahead" line that no longer applies.
+6. **Publish the post and metrics.** Update `docs/product/BLOG.md` with real URLs, run
+   the benchmark on documented hardware, refresh the README numbers, and replace
+   every remaining `<...>` placeholder with the live URLs.
 7. **Rollback plan.** Redeploy the previous image digest; revert docs; deprecate
    a bad npm version and publish a patch (never unpublish); restore backups only
    after stopping writers.
@@ -36,4 +36,4 @@ The full canonical runbook is
 admin-protected. The demo smoke workflow skips until `DEMO_URL` exists.
 
 The owner-only board and release gates are in
-[`docs/MILESTONES.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/MILESTONES.md).
+[`docs/product/MILESTONES.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/product/MILESTONES.md).
