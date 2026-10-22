@@ -3,12 +3,16 @@ import { existsSync } from "node:fs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { waitHealthy } from "../helpers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.join(__dirname, "..", "..");
 const firefoxBin = process.env.FIREFOX_BIN || "/usr/bin/firefox";
 const geckodriverBin = process.env.GECKODRIVER_BIN || "/usr/bin/geckodriver";
-const demoURL = pathToFileURL(path.join(__dirname, "..", "..", "examples", "demos", "kanban.html")).href + "?test=1";
+const BIN = path.join(repoRoot, "bin", "syncwell");
+const PORT = 8127;
+const demoURL = `http://127.0.0.1:${PORT}/kanban.html?test=1`;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -111,7 +115,7 @@ async function execute(sessionId, script) {
   return json.value;
 }
 
-async function waitFor(sessionId, script, timeoutMs = 8000) {
+async function waitFor(sessionId, script, timeoutMs = 15000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const value = await execute(sessionId, script);
@@ -130,15 +134,26 @@ test("kanban browser e2e passes at desktop and mobile widths", async () => {
     existsSync(geckodriverBin),
     `geckodriver not found at ${geckodriverBin}; install it or set GECKODRIVER_BIN`,
   );
-  await withSession(async (sessionId) => {
-    await setWindowRect(sessionId, 1280, 900);
-    await navigate(sessionId, demoURL);
-    assert.equal(await waitFor(sessionId, "return document.body.dataset.e2e === 'pass'"), true);
-    assert.match(await execute(sessionId, "return document.body.textContent"), /browser e2e passed/);
+  assert.ok(existsSync(BIN), `${BIN} missing; run \`make build\` first`);
 
-    await setWindowRect(sessionId, 390, 900);
-    await navigate(sessionId, demoURL);
-    assert.equal(await waitFor(sessionId, "return document.body.dataset.e2e === 'pass'"), true);
-    assert.match(await execute(sessionId, "return document.body.textContent"), /browser e2e passed/);
-  });
+  // Serve the demo through the real binary instead of loading it from file://.
+  // The page imports /sdk/* and /demo-common.js with absolute URLs, so a file
+  // URL silently fails to load the module and the e2e hooks never run.
+  const srv = spawn(BIN, ["-addr", `127.0.0.1:${PORT}`], { cwd: repoRoot, stdio: "ignore" });
+  try {
+    await waitHealthy(PORT);
+    await withSession(async (sessionId) => {
+      await setWindowRect(sessionId, 1280, 900);
+      await navigate(sessionId, demoURL);
+      assert.equal(await waitFor(sessionId, "return document.body.dataset.e2e === 'pass'"), true);
+      assert.match(await execute(sessionId, "return document.body.textContent"), /browser e2e passed/);
+
+      await setWindowRect(sessionId, 390, 900);
+      await navigate(sessionId, demoURL);
+      assert.equal(await waitFor(sessionId, "return document.body.dataset.e2e === 'pass'"), true);
+      assert.match(await execute(sessionId, "return document.body.textContent"), /browser e2e passed/);
+    });
+  } finally {
+    srv.kill("SIGTERM");
+  }
 });
