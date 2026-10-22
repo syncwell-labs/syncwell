@@ -51,7 +51,7 @@ code to a hiring manager.
       browser builds (+ clients/javascript/README.md); npm-publish-ready
 - [x] Release automation: GoReleaser archives + checksums + SBOMs, npm
       provenance workflow, multi-arch signed GHCR image
-- [x] Built-in TLS (`-tls-cert`/`-tls-key`) + Compose/Fly/Render/nginx/Caddy/
+- [x] Built-in TLS (`-tls-cert`/`-tls-key`) + Compose/Render/nginx/Caddy/
       systemd templates
 - [x] Auth hooks: room tokens (`-secret`/`-mint`), Origin allow-list, client cap
 - [x] Single Docker image (multi-stage, distroless) + one-command run

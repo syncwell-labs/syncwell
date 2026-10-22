@@ -83,9 +83,9 @@ npm publish --access public
 ## 4. Deploy and verify
 
 - [ ] Deploy the tagged image or binary using a template in
-      [`docs/operations/DEPLOY.md`](./DEPLOY.md) (Compose/Fly/Render/nginx/Caddy/systemd).
-- [ ] Set `SYNCWELL_SECRET`, `SYNCWELL_ADMIN_TOKEN`, `SYNCWELL_ORIGINS`, and
-      `SYNCWELL_DATA`; chown the volume to uid `65532` once.
+      [`docs/operations/DEPLOY.md`](./DEPLOY.md) (Compose/Render/nginx/Caddy/systemd).
+- [ ] Set `SYNCWELL_SECRET`, `SYNCWELL_ADMIN_TOKEN`, and `SYNCWELL_ORIGINS`;
+      set `SYNCWELL_DATA` and chown the volume only on a persistent host.
 - [ ] `curl -s https://HOST/healthz` → `ok`.
 - [ ] `curl -sI https://HOST/sdk/syncwell.js` → `200`.
 - [ ] `/stats` and `/metrics` require the admin token.

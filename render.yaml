@@ -1,25 +1,32 @@
-# Render template. Render injects PORT; the binary honors it when
-# SYNCWELL_ADDR is unset. Persistent disks are mounted as root, so chown the
-# mount once from the Render shell: chown -R 65532:65532 /var/data
+# Render Blueprint: free hosted demo (no credit card required).
+#
+# Deploy: Render Dashboard -> New -> Blueprint -> select this repo.
+# The image is pinned to the v0.4.0 multi-arch digest so redeploys are
+# reproducible. Free services sleep after 15 minutes without inbound traffic
+# and have no persistent disk, so rooms live in memory and reset on restart.
+# For durable production hosting use a paid plan with a disk and set
+# SYNCWELL_DATA to the mount path.
 services:
   - type: web
-    name: syncwell
-    runtime: docker
-    plan: starter
-    region: oregon
+    name: syncwell-demo
+    runtime: image
+    plan: free
+    region: singapore
+    image:
+      url: ghcr.io/nil-vaghani/syncwell@sha256:f37fc729237873b75c94824ba5503908800a98990fa35f30fcbf7314f5dbc1d2
     healthCheckPath: /healthz
     envVars:
-      - key: SYNCWELL_DATA
-        value: /var/data
-      - key: SYNCWELL_FSYNC
-        value: batch
-      - key: SYNCWELL_SECRET
-        generateValue: true
+      # Throwaway public demo: no room tokens, in-memory rooms only. Keep the
+      # admin token set so /stats and /metrics stay protected.
+      - key: SYNCWELL_INSECURE
+        value: "1"
       - key: SYNCWELL_ADMIN_TOKEN
         generateValue: true
-      - key: SYNCWELL_ORIGINS
-        sync: false
-    disk:
-      name: syncwell-data
-      mountPath: /var/data
-      sizeGB: 1
+      - key: SYNCWELL_MAX_ROOMS
+        value: "200"
+      - key: SYNCWELL_MAX_CLIENTS
+        value: "200"
+      # Set this in the dashboard after the service URL and any custom domain
+      # are known, e.g. https://syncwell-demo.onrender.com
+      # - key: SYNCWELL_ORIGINS
+      #   sync: false

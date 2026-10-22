@@ -72,7 +72,8 @@ the [demos](/guide/getting-started#_1-run-the-server) in two windows.
 
 ## Platform templates
 
-The repository includes templates for Fly.io, Render, Docker Compose, nginx,
-Caddy, and systemd under `deploy/` plus `fly.toml`, `render.yaml`, and
-`docker-compose.yml`. Start from the [configuration](/self-hosting/configuration)
-reference before exposing a public host.
+The repository includes templates for Render, Docker Compose, nginx, Caddy,
+and systemd under `deploy/` plus `render.yaml` and `docker-compose.yml`. Render
+Free needs no credit card but sleeps when idle and keeps rooms in memory. Start
+from the [configuration](/self-hosting/configuration) reference before exposing
+a public host.

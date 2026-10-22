@@ -151,7 +151,8 @@ shows real figures.
 - [x] Docker image finalized (multi-stage, distroless, static binary) +
       `.dockerignore`; `docker run` one-liner in README.
 - [ ] Deploy a hosted live demo; put the URL in README. _(Needs your hosting
-      account — single static binary makes Fly.io/Render/VPS trivial.)_
+      account — Render Free works without a card; the single static binary also
+      makes a VPS straightforward.)_
 - [x] GitHub Actions CI: `make all` + chaos + bench on push; badge in README.
       _Activates once pushed to your GitHub repo._
 

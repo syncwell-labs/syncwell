@@ -41,7 +41,7 @@ Sizes: **S** ≤ 1 day, **M** 2–4 days, **L** 1–2 weeks, **XL** > 2 weeks.
   `Release` runs GoReleaser (3 OS × 2 arch, checksums, SBOM) and pushes a
   multi-arch GHCR image with provenance/SBOM attestations signed keylessly via
   cosign; built-in TLS (`-tls-cert`/`-tls-key`, TLS 1.2+, HTTP/2); Compose,
-  Fly, Render, nginx, Caddy, and systemd templates; fixed-parameter benchmark
+  Render, nginx, Caddy, and systemd templates; fixed-parameter benchmark
   workflow. ACME autocert was deliberately left to the proxy/ACME client (no
   account storage in the server).
 - **Phase 4 — complete (2026-10-20).** 4.1: public binds without credentials
@@ -150,7 +150,7 @@ and message loss; a killed node's rooms are re-homed; docs explain the topology.
 | 3.4 | GoReleaser: multi-arch binaries, checksums, SBOM; tag → GitHub release | H-1 | M |
 | 3.5 | Publish container to GHCR (multi-arch, signed) | H-1 | S |
 | 3.6 | Built-in TLS: `-tls-cert`/`-tls-key` (+ optional ACME autocert) | H-2 | M |
-| 3.7 | Deploy templates: `fly.toml`, `render.yaml`, `docker-compose.yml`, nginx/caddy samples | H-2 | M |
+| 3.7 | Deploy templates: `render.yaml`, `docker-compose.yml`, nginx/caddy samples | H-2 | M |
 | 3.8 | Reproducible benchmark in CI; regenerate `docs/product/BENCHMARKS.md` | M-1, L-2 | S |
 
 **Acceptance:** `npm i syncwell-client`, `docker run ghcr.io/…`, and a downloaded
@@ -258,7 +258,7 @@ Phase 0 ──▶ Phase 1 ──┐
    slower). Affects 1.1 and the marketing claim.
 3. **Second client language:** Python (easiest) vs Rust (perf story). Affects 6.9.
 4. **Build strategy for SDK:** hand-written types + esbuild vs tsc. Affects 3.1/3.2.
-5. **Hosted demo host:** Fly/Railway/Koyeb (see `docs/operations/DEPLOY.md`). Affects 7.2.
+5. **Hosted demo host:** Render Free (see `docs/operations/DEPLOY.md`). Affects 7.2.
 
 ## Milestones (suggested)
 

@@ -43,8 +43,8 @@ Ready-to-edit templates:
 | Target | File | Notes |
 | --- | --- | --- |
 | Docker Compose | [`docker-compose.yml`](../../docker-compose.yml) | secrets via `.env`, named volume, one-time chown init |
-| Fly.io | [`fly.toml`](../../fly.toml) | volume + health check; chown the volume once |
-| Render | [`render.yaml`](../../render.yaml) | disk + generated secrets; chown the disk once |
+| Render Free | [`render.yaml`](../../render.yaml) | no card, in-memory rooms, sleeps when idle |
+| Render paid | [`render.yaml`](../../render.yaml) | add a disk and set `SYNCWELL_DATA`; chown the disk once |
 | nginx | [`deploy/proxies/nginx.conf`](../../deploy/proxies/nginx.conf) | WebSocket upgrade, long read timeout, private relay |
 | Caddy | [`deploy/proxies/Caddyfile`](../../deploy/proxies/Caddyfile) | automatic certificates |
 | systemd | [`deploy/systemd/syncwell.service`](../../deploy/systemd/syncwell.service) | hardened unit for a binary install |
@@ -55,9 +55,10 @@ platform disks are usually mounted root-owned, so chown them once:
 ```bash
 # Compose does this automatically via the `init` service; otherwise:
 docker run --rm -v syncwell-data:/data busybox chown -R 65532:65532 /data
-# Fly:   fly ssh console -u root -C "chown -R 65532:65532 /data"
-# Render: chown -R 65532:65532 /var/data   (from the shell)
+# Render paid disk: chown -R 65532:65532 /var/data   (from the shell)
 ```
+
+Render Free has no shell or persistent disk, so there is nothing to chown there.
 
 ## TLS
 
@@ -201,22 +202,20 @@ document keys, so only send them to a trusted collector.
 
 Two constraints bite realtime WebSocket servers on managed platforms:
 
-- **Idle WebSocket timeouts.** Some platforms (Render, in particular) terminate
-  idle WebSockets after ~5 minutes on every plan. The SDK reconnects with
-  backoff and CRDT convergence still holds, but "a cursor that stays live for an
-  hour" is not what you get. Prefer a host that keeps sockets open.
-- **Cold starts.** Free tiers that sleep after inactivity add 30 s+ to the first
-  request, which makes a realtime demo look broken. Use a non-sleeping tier.
+- **Sleeping free tiers.** Render Free spins down after 15 minutes without
+  inbound HTTP or WebSocket traffic. The next request waits roughly a minute
+  while the service starts, which is noticeable for a public demo.
+- **Idle proxy timeouts.** Some proxies terminate quiet WebSockets. The SDK
+  reconnects with backoff and CRDT convergence still holds, but prefer a proxy
+  with a long read timeout for long-lived cursors.
 
 ## Host comparison
 
 | Host | Card required? | Persistent WebSockets? | Cold starts? | Notes |
 | --- | --- | --- | --- | --- |
-| Render free | Yes | No (~5-min idle kill) | Yes (~15 min) | avoid for realtime |
-| Render paid | Yes | No (~5-min idle kill) | No | works, with the idle caveat |
-| Fly.io | varies | Yes | No | machines + volumes |
+| Render free | No | Yes (while active) | ~1 min after 15 min idle | zero-budget demo; no disk |
+| Render paid | Yes | Yes | No | disk + no sleep |
 | Railway | No (trial) | Yes | No | $5 trial credit |
-| Koyeb | No | Yes (limits) | Limited | check current policy |
 | Self-host (Hetzner/OVH) | Yes | Yes | No | ~€4/mo, full control |
 
 ## Persistent data

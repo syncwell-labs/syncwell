@@ -5,6 +5,10 @@
 
 **Add multiplayer — live cursors, presence, and conflict-free shared state — to any app with a few lines of code. Self-hostable, single binary, language-agnostic.**
 
+**Live demo:** https://syncwell-demo.onrender.com · **Docs:** https://nil-vaghani.github.io/syncwell/
+
+The demo runs on a free Render instance: it sleeps after 15 minutes idle (about a minute to wake), rooms are in-memory, and `SYNCWELL_INSECURE=1` is intentional for the throwaway demo.
+
 Syncwell is an open-source, self-hostable real-time collaboration engine — an alternative to closed SaaS like Liveblocks and PartyKit. Drop in the client SDK, point it at a Syncwell server, and your users get Google-Docs-style live sync. The server compiles to a single static binary with no runtime dependencies — no database, cache, or message broker to operate.
 
 ```
@@ -120,8 +124,8 @@ Once a release is tagged, prebuilt archives for Linux, macOS, and Windows
 [release](https://github.com/Nil-Vaghani/syncwell/releases/latest)
 automatically, with `checksums.txt` and SPDX SBOMs (until then, build from
 source as above). Platform templates live in
-[`fly.toml`](fly.toml), [`render.yaml`](render.yaml),
-[`docker-compose.yml`](docker-compose.yml), and [`deploy/`](deploy/).
+[`render.yaml`](render.yaml), [`docker-compose.yml`](docker-compose.yml), and
+[`deploy/`](deploy/).
 
 ### TLS without a proxy
 

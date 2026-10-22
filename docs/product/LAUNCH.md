@@ -9,8 +9,10 @@ live URL until it actually serves the release.
 - A release commit on `main` with green CI.
 - Repository secrets/variables: `NPM_TOKEN`, `GITHUB_TOKEN` (provided),
   `SYNCWELL_SECRET`, `SYNCWELL_ADMIN_TOKEN`.
-- A host for the demo (Render, Fly.io, or a VPS). The templates in `render.yaml`,
-  `fly.toml`, and `deploy/` are starting points.
+- A host for the demo. The zero-budget path is Render's free web service
+  ([`render.yaml`](../../render.yaml)); the templates in `deploy/` cover VPS
+  hosting. Render Free needs no credit card, sleeps after 15 minutes without
+  traffic, and has no persistent disk.
 - A DNS name or platform hostname for the demo and status page.
 
 ## 1. Tag and publish the release
@@ -34,32 +36,40 @@ Use the next semantic version, not necessarily `0.4.0`. Verify:
 
 ## 2. Deploy the hosted demo pinned to the tag
 
-Deploy by immutable image tag/digest, never `latest`:
+The zero-budget path is Render's free web service. It needs no credit card, but
+it sleeps after 15 minutes without inbound traffic (about a minute to wake) and
+has no persistent disk, so demo rooms reset on restart.
+
+1. In **Render Dashboard → New → Blueprint**, select this repository.
+2. Apply [`render.yaml`](../../render.yaml): `plan: free`, region `singapore`,
+   and the pinned image digest.
+3. The free demo runs with `SYNCWELL_INSECURE=1` (no room tokens, throwaway
+   in-memory rooms) and a generated `SYNCWELL_ADMIN_TOKEN`, so `/stats` and
+   `/metrics` stay protected.
+4. After the first deploy, set `SYNCWELL_ORIGINS` to the service URL and any
+   custom domain, then restart the service.
+
+Deploy by immutable image digest, never `latest`:
 
 ```text
-ghcr.io/nil-vaghani/syncwell:vX.Y.Z
+ghcr.io/nil-vaghani/syncwell@sha256:f37fc729237873b75c94824ba5503908800a98990fa35f30fcbf7314f5dbc1d2
 ```
 
-Required environment:
-
-```text
-SYNCWELL_SECRET=<generated>
-SYNCWELL_ADMIN_TOKEN=<generated>
-SYNCWELL_DATA=/data
-SYNCWELL_ORIGINS=https://<demo-host>
-```
+`SYNCWELL_DATA` is intentionally unset on the free plan (in-memory rooms). For a
+paid deployment with a disk, set `SYNCWELL_DATA` to the mount path instead.
 
 Then verify:
 
 ```bash
-curl -fsS https://<demo-host>/healthz
-curl -fsS https://<demo-host>/readyz
+curl -fsS https://syncwell-demo.onrender.com/healthz
+curl -fsS https://syncwell-demo.onrender.com/readyz
 curl -fsS -H "Authorization: Bearer $SYNCWELL_ADMIN_TOKEN" \
-  https://<demo-host>/stats
+  https://syncwell-demo.onrender.com/stats
 ```
 
-If `SYNCWELL_SECRET` is set (recommended), the public demos need room tokens.
-Mint one long-lived token per demo room and publish those URLs:
+For a token-protected deployment (paid host or real data), remove
+`SYNCWELL_INSECURE`, set `SYNCWELL_SECRET`, then mint one long-lived token per
+demo room and publish those URLs:
 
 ```bash
 for room in demo kanban sequence-demo; do
@@ -70,9 +80,8 @@ done
 # https://<demo-host>/sequence.html?room=sequence-demo&token=<sequence-demo-token>
 ```
 
-Keep the admin token out of every shared URL. If the demo is intentionally
-throwaway, `SYNCWELL_INSECURE=1` is the explicit alternative; do not use it for a
-deployment holding real data.
+Keep the admin token out of every shared URL. Never use `SYNCWELL_INSECURE=1` on
+a deployment holding real data.
 
 Open `/`, `/kanban.html`, and `/sequence.html` in two browser windows. Confirm
 edits, cursors, reconnect after a network toggle, and an admin room listing.
@@ -90,9 +99,10 @@ draining. If a public status page is required, publish one that reflects:
 - `GET /metrics` (admin-protected; do not expose publicly)
 - demo WebSocket join/sync smoke
 
-Set repository variable `DEMO_URL=https://<demo-host>`. The scheduled
-`Demo smoke` workflow then checks `/healthz` and `/readyz` every 15 minutes and
-can be run manually. It skips until the variable exists.
+The repository variable is set to
+`DEMO_URL=https://syncwell-demo.onrender.com`. The scheduled `Demo smoke`
+workflow then checks `/healthz` and `/readyz` every 15 minutes and can be run
+manually.
 
 Record the public URL in `README.md` and the docs site only after the first green
 smoke run.
@@ -104,11 +114,10 @@ smoke run.
 3. Run **Docs → Deploy docs** (or push a change under `website/`).
 4. Verify the deployed URL, navigation, local search, and code blocks.
 
-The workflow builds with `DOCS_BASE=/syncwell/` by default. If you use a custom
-domain or a different repository name, set the repository variable `DOCS_BASE`
-(for example `/` for a root domain) before deploying.
-
-Add the live docs URL to the README and GitHub repository website field.
+The workflow builds with `DOCS_BASE=/syncwell/` by default and publishes to
+https://nil-vaghani.github.io/syncwell/. If you use a custom domain or a
+different repository name, set the repository variable `DOCS_BASE` (for example
+`/` for a root domain) before deploying.
 
 ## 5. Publish the launch post and metrics
 
