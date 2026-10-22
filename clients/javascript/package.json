@@ -1,6 +1,6 @@
 {
   "name": "syncwell-client",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Zero-dependency browser/Node client for the Syncwell real-time collaboration engine.",
   "type": "module",
   "main": "./dist/cjs/syncwell.cjs",

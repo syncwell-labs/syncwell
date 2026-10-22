@@ -6,8 +6,7 @@ state (a CRDT) — so writes apply instantly and work offline, converging with t
 server on reconnect.
 
 ```bash
-# Not on npm yet — copy the clients/javascript/ directory into your project and import it
-# directly. Once published: npm install syncwell-client
+npm install syncwell-client
 ```
 
 ```js

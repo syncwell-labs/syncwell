@@ -117,8 +117,8 @@ go run ./cmd/syncwell -addr 127.0.0.1:8080
 # open http://localhost:8080/sequence.html in two windows
 ```
 
-Import the client from the served `clients/javascript/` directory (or `npm install
-syncwell-client` once published), or read the
+Import the client from the served `clients/javascript/` directory or `npm install
+syncwell-client`, or read the
 [self-hosting guide](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/operations/DEPLOY.md).
 
 Code, design notes, and the test suite that proves all of the above:

@@ -51,9 +51,8 @@ path needs no install:
 import { Syncwell } from "/sdk/syncwell.js";
 ```
 
-For a bundler or Node setup, copy the `clients/javascript/` directory into your project (or
-install `npm install syncwell-client` once the package is published — the API
-is identical).
+For a bundler or Node setup, install the package (`npm install syncwell-client`)
+or copy the `clients/javascript/` directory into your project; the API is identical.
 
 ## 3. Write and read
 

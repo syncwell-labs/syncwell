@@ -167,9 +167,8 @@ peers.setSelection(5);
 text.on("change", () => console.log(text.text()));
 ```
 
-For a bundler/Node setup you can also install the npm package once it is
-published (`npm install syncwell-client`, same API, TypeScript types included;
-until then copy the `clients/javascript/` directory or import from your own `/sdk/` mount).
+For a bundler/Node setup install the npm package (`npm install syncwell-client`,
+same API, TypeScript types included) or import the copy the server serves from `/sdk/`.
 
 For hosted deployments, put Syncwell behind TLS, configure `-origins`, require
 room tokens with `-secret`, protect `/stats` with `-admin-token`, use
