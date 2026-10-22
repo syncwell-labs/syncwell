@@ -115,7 +115,7 @@ smoke run.
 4. Verify the deployed URL, navigation, local search, and code blocks.
 
 The workflow builds with `DOCS_BASE=/syncwell/` by default and publishes to
-https://nil-vaghani.github.io/syncwell/. If you use a custom domain or a
+https://syncwell-labs.github.io/syncwell/. If you use a custom domain or a
 different repository name, set the repository variable `DOCS_BASE` (for example
 `/` for a root domain) before deploying.
 

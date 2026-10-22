@@ -1,7 +1,7 @@
 import { defineConfig } from "vitepress";
 
 const base = process.env.DOCS_BASE || "/";
-const origin = process.env.DOCS_ORIGIN || "https://nil-vaghani.github.io";
+const origin = process.env.DOCS_ORIGIN || "https://syncwell-labs.github.io";
 const repo = "https://github.com/Nil-Vaghani/syncwell";
 
 export default defineConfig({

@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://nil-vaghani.github.io/syncwell/sitemap.xml
+Sitemap: https://syncwell-labs.github.io/syncwell/sitemap.xml

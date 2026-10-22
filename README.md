@@ -1,11 +1,11 @@
 # Syncwell
 
-[![CI](https://github.com/Nil-Vaghani/syncwell/actions/workflows/ci.yml/badge.svg)](https://github.com/Nil-Vaghani/syncwell/actions/workflows/ci.yml)
+[![CI](https://github.com/syncwell-labs/syncwell/actions/workflows/ci.yml/badge.svg)](https://github.com/syncwell-labs/syncwell/actions/workflows/ci.yml)
 &nbsp;![Go](https://img.shields.io/badge/Go-1.26-00ADD8) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **Add multiplayer — live cursors, presence, and conflict-free shared state — to any app with a few lines of code. Self-hostable, single binary, language-agnostic.**
 
-**Live demo:** https://syncwell-demo.onrender.com · **Docs:** https://nil-vaghani.github.io/syncwell/
+**Live demo:** https://syncwell-demo.onrender.com · **Docs:** https://syncwell-labs.github.io/syncwell/
 
 The demo runs on a free Render instance: it sleeps after 15 minutes idle (about a minute to wake), rooms are in-memory, and `SYNCWELL_INSECURE=1` is intentional for the throwaway demo.
 
