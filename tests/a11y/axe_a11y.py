@@ -35,7 +35,6 @@ DEMO_PORT = int(os.environ.get("AXE_DEMO_PORT", "18401"))
 SITE_PORT = int(os.environ.get("AXE_SITE_PORT", "18402"))
 CD_PORT = int(os.environ.get("AXE_CHROMEDRIVER_PORT", "18403"))
 DEMO_BASE = f"http://127.0.0.1:{DEMO_PORT}"
-SITE_BASE = f"http://127.0.0.1:{SITE_PORT}"
 CD = f"http://127.0.0.1:{CD_PORT}"
 
 DEMO_PAGES = ["/", "/kanban.html", "/sequence.html", "/admin"]
@@ -56,6 +55,29 @@ SITE_PAGES = [
 def die(msg, code=2):
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(code)
+
+
+def prepare_site(dist):
+    """Serve the build under its configured base path.
+
+    VitePress emits absolute asset URLs (`${base}assets/...`). A build made
+    with DOCS_BASE=/syncwell/ therefore 404s every script and stylesheet when
+    served from the dist root, leaving the page unhydrated — which in turn
+    produces false accessibility failures. Mirror the base with a symlink so
+    the scan exercises the same URLs that production serves.
+    """
+    base = os.environ.get("DOCS_BASE", "/").strip()
+    if not base.startswith("/"):
+        base = "/" + base
+    if not base.endswith("/"):
+        base += "/"
+    if base == "/":
+        return dist, base, None
+    root = Path(tempfile.mkdtemp(prefix="syncwell-docs-"))
+    target = root / base.strip("/")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(dist.resolve(), target)
+    return root, base, root
 
 
 def req(method, path, body=None, timeout=180):
@@ -159,19 +181,22 @@ def main():
             or shutil.which("chromium") or shutil.which("chromium-browser")):
         die("Chrome/Chromium not found on PATH")
 
+    site_dir, site_base, site_cleanup = prepare_site(dist)
+    site_url = f"http://127.0.0.1:{SITE_PORT}{site_base}"
+
     procs = []
     try:
         procs.append(subprocess.Popen(
             [str(binary), "-addr", f"127.0.0.1:{DEMO_PORT}"],
             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         procs.append(subprocess.Popen(
-            [sys.executable, "-m", "http.server", str(SITE_PORT), "--directory", str(dist)],
+            [sys.executable, "-m", "http.server", str(SITE_PORT), "--directory", str(site_dir)],
             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         procs.append(subprocess.Popen(
             ["chromedriver", f"--port={CD_PORT}", "--allowed-ips=", "--allowed-origins=*"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         wait_http(f"{DEMO_BASE}/healthz", "syncwell")
-        wait_http(f"{SITE_BASE}/index.html", "docs site")
+        wait_http(f"{site_url}index.html", "docs site")
         wait_http(f"{CD}/status", "chromedriver")
 
         results, errors = [], []
@@ -220,18 +245,20 @@ def main():
 
             print("== website, light ==")
             for p in SITE_PAGES:
-                navigate(sid_light, SITE_BASE + p)
+                page = site_url + p.lstrip("/")
+                navigate(sid_light, page)
                 exec_js(sid_light, "document.documentElement.classList.remove('dark'); return true;")
                 time.sleep(0.3)
-                measure(sid_light, SITE_BASE + p, "light")
+                measure(sid_light, page, "light")
 
             # VitePress switches schemes with the .dark class, not the media query
             print("== website, dark ==")
             for p in SITE_PAGES:
-                navigate(sid_light, SITE_BASE + p)
+                page = site_url + p.lstrip("/")
+                navigate(sid_light, page)
                 exec_js(sid_light, "document.documentElement.classList.add('dark'); return true;")
                 time.sleep(0.3)
-                measure(sid_light, SITE_BASE + p, "dark")
+                measure(sid_light, page, "dark")
         finally:
             for sid in (sid_light, sid_dark):
                 try:
@@ -246,6 +273,8 @@ def main():
                 p.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 p.kill()
+        if site_cleanup:
+            shutil.rmtree(site_cleanup, ignore_errors=True)
 
     report = {"results": results, "errors": errors}
     out = Path(args.out)

@@ -13,7 +13,7 @@ make docs-build     # VitePress
 make run            # http://localhost:8080
 ```
 
-Requirements: Go 1.23+, Node 18+, Python 3.10+ for the Python client.
+Requirements: Go 1.26+, Node 18+, Python 3.10+ for the Python client.
 
 ## Where to start
 

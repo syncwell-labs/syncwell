@@ -164,7 +164,7 @@ A change passes this standard only when:
 
 | # | Criterion | Status | Verification run |
 | --- | --- | --- | --- |
-| 1 | Time-to-value | **Pass** | README opens with quickstart (`README.md:19`): one `go run` command, URLs listed, Go 1.23+ prerequisite stated. |
+| 1 | Time-to-value | **Pass** | README opens with quickstart (`README.md:19`): one `go run` command, URLs listed, Go 1.26+ prerequisite stated. |
 | 2 | Zero-config start | **Pass** | `make run` binds `127.0.0.1:8080` (`Makefile`); banner prints "no token needed"; demo verified live over HTTP. |
 | 3 | Error names next action | **Pass** | Flag errors name env vars (`-mint requires -secret or SYNCWELL_SECRET`, `-data or SYNCWELL_DATA`, tls-pair, oidc-issuer); `Config.Validate()` does the same; demo shows title + raw code + hint. |
 | 4 | No unexplained jargon | **Pass** | First diagram label is "conflict-free doc"; "CRDT laws" glossed; "room token" and "secret" defined at first use (README quickstart, getting-started); hero/features in plain language; clients/javascript/README CRDT glossed. |

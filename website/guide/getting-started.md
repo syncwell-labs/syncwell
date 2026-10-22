@@ -7,7 +7,7 @@ offline.
 
 ## 1. Run the server
 
-Requires **Go 1.23+**. For local development, bind loopback so credentials are
+Requires **Go 1.26+**. For local development, bind loopback so credentials are
 not required:
 
 ```bash

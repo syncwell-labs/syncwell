@@ -14,7 +14,7 @@ make docs-build     # build the VitePress docs site
 make run            # http://localhost:8080, /kanban.html, /sequence.html
 ```
 
-Requirements: Go 1.23+, Node 18+, and Python 3.10+ for the Python client.
+Requirements: Go 1.26+, Node 18+, and Python 3.10+ for the Python client.
 Browser E2E additionally needs `firefox` and `geckodriver`.
 
 `make all` does not install npm packages or need network access. Run

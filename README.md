@@ -1,7 +1,7 @@
 # Syncwell
 
 [![CI](https://github.com/Nil-Vaghani/syncwell/actions/workflows/ci.yml/badge.svg)](https://github.com/Nil-Vaghani/syncwell/actions/workflows/ci.yml)
-&nbsp;![Go](https://img.shields.io/badge/Go-1.23-00ADD8) ![License](https://img.shields.io/badge/license-MIT-blue)
+&nbsp;![Go](https://img.shields.io/badge/Go-1.26-00ADD8) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **Add multiplayer — live cursors, presence, and conflict-free shared state — to any app with a few lines of code. Self-hostable, single binary, language-agnostic.**
 
@@ -18,7 +18,7 @@ Syncwell is an open-source, self-hostable real-time collaboration engine — an 
 
 ## Quickstart
 
-You need **Go 1.23+** on your PATH (the compiled server has zero runtime
+You need **Go 1.26+** on your PATH (the compiled server has zero runtime
 dependencies). Then:
 
 ```bash

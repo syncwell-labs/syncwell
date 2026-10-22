@@ -6,20 +6,6 @@ on:
   pull_request:
 
 jobs:
-  # The README promises Go 1.23+ for source builds. Keep that claim honest
-  # without running the full (slower) suite on every supported toolchain.
-  go-min:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-
-      - name: Build with the documented minimum Go version
-        run: go build ./...
-
   test:
     runs-on: ubuntu-latest
     steps:
@@ -28,6 +14,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          check-latest: true
 
       - uses: actions/setup-node@v4
         with:
@@ -72,6 +59,8 @@ jobs:
         run: make docs-build
 
       - name: Accessibility scan (axe-core)
+        env:
+          DOCS_BASE: /syncwell/
         run: |
           command -v chromedriver
           command -v google-chrome || command -v chromium || command -v chromium-browser
