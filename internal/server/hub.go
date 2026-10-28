@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,9 +32,28 @@ const defaultIdleRoomTTL = 60 * time.Second
 // would be exceeded by creating another one.
 var errRoomCapacity = errors.New("room capacity reached")
 
+// errDocCapacity is returned when a winning write would exceed the per-room
+// document entry or byte budget.
+var errDocCapacity = errors.New("document capacity reached")
+
+// errPersist is returned when the store rejects a winning write.
+var errPersist = errors.New("persistence failed")
+
+// errLoadFailed is returned when persisted state could not be restored or was
+// rejected by the configured limits. The room refuses joins and writes so a
+// rejected log can never be overwritten by an empty compaction.
+var errLoadFailed = errors.New("stored room state is unavailable")
+
 // defaultCompactEvery is how many winning writes trigger a maintenance pass
 // (tombstone GC + snapshot compaction). Configurable via NewHub.
 const defaultCompactEvery = 256
+
+// Public defaults for the documented negative-value semantics. main.go uses
+// these for flag defaults; NewHub also normalizes negative configuration.
+const (
+	DefaultMaxClients = 256
+	DefaultMaxRooms   = 10000
+)
 
 // Wire message type tags (server -> client).
 const (
@@ -85,12 +106,15 @@ type Outbound struct {
 // Client is one websocket connection within a Room. Its send channel is owned
 // (and only ever closed) by the room goroutine — see the single-owner model.
 type Client struct {
-	id     string
-	room   *Room
-	send   chan []byte
-	claims TokenClaims
-	node   string // authoring node id; pinned to prevent mid-stream impersonation
-	delta  bool   // client requested state-vector delta sync on join
+	id            string
+	room          *Room
+	send          chan []byte
+	claims        TokenClaims
+	node          string // authoring node id; pinned to prevent mid-stream impersonation
+	delta         bool   // client requested state-vector delta sync on join
+	dead          bool   // room-owned: send has been closed or the client was evicted
+	maxQueueBytes int64  // queued outbound byte budget (0 = unlimited)
+	queuedBytes   atomic.Int64
 }
 
 // acceptsNode binds the connection to a single authoring node on first use and
@@ -156,6 +180,7 @@ type Room struct {
 	limits          Limits
 	opsSinceCompact int
 	persisted       bool
+	loadErr         error
 	idleTTL         time.Duration
 	idleTimer       *time.Timer
 }
@@ -211,7 +236,10 @@ func newRoom(id, owner string, hub *Hub, idleTTL time.Duration, st store.Store, 
 
 // applyAndPersist merges an incoming register, durably records it if it won,
 // triggers periodic maintenance, and returns the current (winning) register.
-func (r *Room) applyAndPersist(key string, reg crdt.Register) (crdt.Register, bool) {
+func (r *Room) applyAndPersist(key string, reg crdt.Register) (crdt.Register, error) {
+	if r.loadErr != nil {
+		return crdt.Register{}, errLoadFailed
+	}
 	_, span := otel.Tracer("syncwell").Start(context.Background(), "crdt.apply",
 		trace.WithAttributes(
 			attribute.String("syncwell.room", r.id),
@@ -233,14 +261,17 @@ func (r *Room) applyAndPersist(key string, reg crdt.Register) (crdt.Register, bo
 		winner = crdt.ResolveRegister(cur, reg)
 	}
 	if ok && cur.Equal(winner) {
-		return winner, true
+		return winner, nil
 	}
 	if winner.Equal(reg) { // the incoming write won
+		if !r.doc.Fits(key, reg, r.limits.MaxDocEntries, r.limits.MaxDocBytes) {
+			return cur, errDocCapacity
+		}
 		if r.store != nil {
 			if err := r.store.Append(r.id, store.Record{Key: key, Reg: winner}); err != nil {
 				span.SetStatus(codes.Error, "persist failed")
 				LogEvent("room_persist_error", map[string]any{"room": r.id, "error": err.Error(), "key": key})
-				return cur, false
+				return cur, errPersist
 			}
 		}
 		r.doc.ApplyRegister(key, reg)
@@ -249,9 +280,9 @@ func (r *Room) applyAndPersist(key string, reg crdt.Register) (crdt.Register, bo
 			r.maintain()
 			r.opsSinceCompact = 0
 		}
-		return winner, true
+		return winner, nil
 	}
-	return winner, true
+	return winner, nil
 }
 
 // logSizer is implemented by stores that can report their append-log size.
@@ -276,6 +307,9 @@ func (r *Room) logFull() bool {
 // causally stable, then (if persistent) compact the op-log to a snapshot. GC and
 // compaction run regardless of persistence so memory stays bounded in-memory too.
 func (r *Room) maintain() {
+	if r.loadErr != nil {
+		return
+	}
 	// Tombstone collection is a server-memory optimisation; it must not change
 	// the visible document or the epoch. Bumping the epoch here would reject
 	// in-flight ops from connected clients and force a reconnect for no
@@ -340,15 +374,58 @@ func (r *Room) loadPersisted() {
 	if r.store == nil {
 		return
 	}
-	snap, err := r.store.Load(r.id)
+	limits := store.LoadLimits{
+		MaxEntries:    r.limits.MaxDocEntries,
+		MaxBytes:      r.limits.MaxDocBytes,
+		MaxKeyBytes:   r.limits.MaxKeyBytes,
+		MaxValueBytes: r.limits.MaxValueBytes,
+		MaxNodeBytes:  r.limits.MaxNodeIDBytes,
+	}
+	var (
+		snap map[string]crdt.Register
+		err  error
+	)
+	if loader, ok := r.store.(interface {
+		LoadWithLimits(string, store.LoadLimits) (map[string]crdt.Register, error)
+	}); ok {
+		snap, err = loader.LoadWithLimits(r.id, limits)
+	} else {
+		snap, err = r.store.Load(r.id)
+	}
+	if err == nil {
+		err = r.validateSnapshot(snap)
+	}
 	if err != nil {
-		LogEvent("room_load_error", map[string]any{"room": r.id, "error": err.Error()})
+		r.loadErr = err
+		LogEvent("room_load_error", map[string]any{"room": r.id, "error": err.Error(), "action": "refusing joins and writes; original log left intact"})
 		return
 	}
 	r.doc.Load(snap)
 	for _, reg := range snap {
 		r.clock.Observe(reg.TS) // never re-issue a timestamp we've already used
 	}
+}
+
+// validateSnapshot re-applies the live input policy to state read from disk.
+// Stores that implement LoadWithLimits already enforce the budgets during
+// replay; this covers custom stores and guards against impossible registers.
+func (r *Room) validateSnapshot(snap map[string]crdt.Register) error {
+	for key, reg := range snap {
+		if key == "" || len(key) > r.limits.MaxKeyBytes {
+			return fmt.Errorf("stored record has an invalid key")
+		}
+		if err := validateRegister(reg, r.limits); err != nil {
+			return fmt.Errorf("stored record for key %q: %w", key, err)
+		}
+	}
+	entries, bytes := crdt.SnapshotSize(snap)
+	if r.limits.MaxDocEntries > 0 && entries > r.limits.MaxDocEntries {
+		return fmt.Errorf("stored room has %d registers, limit is %d", entries, r.limits.MaxDocEntries)
+	}
+	if r.limits.MaxDocBytes > 0 && bytes > r.limits.MaxDocBytes {
+		return fmt.Errorf("stored room uses %d bytes, limit is %d", bytes, r.limits.MaxDocBytes)
+	}
+	return nil
 }
 
 // armIdle schedules eviction of an empty room after the idle TTL.
@@ -386,7 +463,9 @@ func (r *Room) evictIfEmpty() bool {
 	}
 	r.disarmIdle()
 	if r.store != nil {
-		if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
+		if r.loadErr != nil {
+			LogEvent("room_compact_refused", map[string]any{"room": r.id, "error": r.loadErr.Error()})
+		} else if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
 			LogEvent("room_compact_error", map[string]any{"room": r.id, "error": err.Error()})
 		}
 	}
@@ -407,14 +486,13 @@ func (r *Room) evictIfEmpty() bool {
 // rolling restart) and broadcasts a close to every attached client.
 func (r *Room) forceEvict() {
 	for cl := range r.clients {
-		close(cl.send)
-		delete(r.clients, cl)
-		delete(r.acked, cl)
-		delete(r.sent, cl)
+		r.removeClient(cl)
 	}
 	r.disarmIdle()
 	if r.store != nil {
-		if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
+		if r.loadErr != nil {
+			LogEvent("room_compact_refused", map[string]any{"room": r.id, "error": r.loadErr.Error(), "forced": true})
+		} else if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
 			LogEvent("room_compact_error", map[string]any{"room": r.id, "error": err.Error()})
 		}
 	}
@@ -434,14 +512,40 @@ func (r *Room) forceEvict() {
 // design correct.
 func (r *Room) loop() {
 	defer close(r.done)
+	defer func() {
+		if p := recover(); p != nil {
+			LogEvent("room_panic", map[string]any{"room": r.id, "panic": fmt.Sprint(p), "stack": string(debug.Stack())})
+			for cl := range r.clients {
+				r.removeClient(cl)
+			}
+			if r.unsubscribe != nil {
+				r.unsubscribe()
+				r.unsubscribe = nil
+			}
+			if r.hub != nil {
+				r.hub.removeRoom(r)
+			}
+		}
+	}()
 	r.loadPersisted()
 	for c := range r.cmds {
+		// Commands from clients that were rejected or evicted can still be
+		// queued behind the event that removed them; drop them instead of
+		// writing to a closed send channel.
+		if c.client != nil && c.kind != "join" && !r.clients[c.client] {
+			continue
+		}
 		switch c.kind {
 		case "join":
 			r.disarmIdle()
+			if r.loadErr != nil {
+				r.rejectClient(c.client, "room state unavailable")
+				continue
+			}
 			if r.maxClients > 0 && len(r.clients) >= r.maxClients {
 				// Reject over-capacity: tell the client, then close its channel.
 				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"room full"`)})
+				c.client.dead = true
 				close(c.client.send)
 				continue
 			}
@@ -480,9 +584,9 @@ func (r *Room) loop() {
 					continue
 				}
 				r.noteClock(c.client, c.in.Register.TS.Counter)
-				winner, ok := r.applyAndPersist(c.in.Key, *c.in.Register)
-				if !ok {
-					r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"persistence failed"`)})
+				winner, err := r.applyAndPersist(c.in.Key, *c.in.Register)
+				if err != nil {
+					r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"` + err.Error() + `"`)})
 					continue
 				}
 				r.broadcast(Outbound{Type: msgOp, Key: c.in.Key, Register: &winner}, nil)
@@ -521,10 +625,6 @@ func (r *Room) loop() {
 				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"vector ahead of server clock"`)})
 				continue
 			}
-			if len(c.in.State) > 0 && !c.client.canWrite() {
-				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"write capability required"`)})
-				continue
-			}
 			// Validate the authoring node binding atomically, then merge only the
 			// dirty registers the client sent in its hello.
 			nodeOK := true
@@ -539,21 +639,21 @@ func (r *Room) loop() {
 				continue
 			}
 			var maxCounter uint64
-			persistFailed := false
+			var applyFailed error
 			for k, reg := range c.in.State {
 				if reg.TS.Counter > maxCounter {
 					maxCounter = reg.TS.Counter
 				}
-				winner, ok := r.applyAndPersist(k, reg)
-				if !ok {
-					persistFailed = true
+				winner, err := r.applyAndPersist(k, reg)
+				if err != nil {
+					applyFailed = err
 					continue
 				}
 				r.broadcast(Outbound{Type: msgOp, Key: k, Register: &winner}, c.client)
 			}
 			r.noteClock(c.client, maxCounter)
-			if persistFailed {
-				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"persistence failed"`)})
+			if applyFailed != nil {
+				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"` + applyFailed.Error() + `"`)})
 				continue
 			}
 			// Send only registers newer than the client's state vector. Anything
@@ -598,23 +698,23 @@ func (r *Room) loop() {
 				continue
 			}
 			var maxCounter uint64
-			persistFailed := false
+			var applyFailed error
 			for k, reg := range c.in.State {
 				if reg.TS.Counter > maxCounter {
 					maxCounter = reg.TS.Counter
 				}
-				winner, ok := r.applyAndPersist(k, reg)
-				if !ok {
-					persistFailed = true
+				winner, err := r.applyAndPersist(k, reg)
+				if err != nil {
+					applyFailed = err
 					continue
 				}
 				r.broadcast(Outbound{Type: msgOp, Key: k, Register: &winner}, c.client)
 			}
 			r.noteClock(c.client, maxCounter)
-			if persistFailed {
+			if applyFailed != nil {
 				// One structured failure, and no snapshot: the client must
 				// retry rather than believe a partially-durable merge landed.
-				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"persistence failed"`)})
+				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"` + applyFailed.Error() + `"`)})
 				continue
 			}
 			r.sendTo(c.client, Outbound{Type: msgSnapshot, State: r.doc.Snapshot(), Epoch: r.epoch})
@@ -650,6 +750,10 @@ func (r *Room) loop() {
 			r.applyCluster(*c.cluster)
 
 		case "export":
+			if r.loadErr != nil {
+				c.export <- nil
+				continue
+			}
 			c.export <- r.doc.Snapshot()
 
 		case "stats":
@@ -657,6 +761,13 @@ func (r *Room) loop() {
 			c.reply <- RoomStats{Clients: len(r.clients), Live: s.Live, Tombstones: s.Tombstones, LowWater: r.lowWater(), Owner: r.owner}
 
 		case "resnapshot":
+			if r.loadErr != nil {
+				LogEvent("room_resnapshot_refused", map[string]any{"room": r.id, "error": r.loadErr.Error()})
+				if c.result != nil {
+					c.result <- false
+				}
+				continue
+			}
 			r.broadcast(Outbound{Type: msgSnapshot, State: r.doc.Snapshot(), Epoch: r.epoch}, nil)
 			if r.store != nil {
 				if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
@@ -704,9 +815,9 @@ func (r *Room) applyCluster(ev ClusterEvent) {
 		}
 		// Cluster writes take the same durable, clock-advancing path as local
 		// writes; a remote op must survive a restart just like a local one.
-		winner, ok := r.applyAndPersist(ev.Key, *ev.Register)
-		if !ok {
-			LogEvent("cluster_persist_error", map[string]any{"room": r.id, "key": ev.Key, "from": ev.From})
+		winner, err := r.applyAndPersist(ev.Key, *ev.Register)
+		if err != nil {
+			LogEvent("cluster_persist_error", map[string]any{"room": r.id, "key": ev.Key, "from": ev.From, "error": err.Error()})
 			return
 		}
 		r.broadcast(Outbound{Type: msgOp, Key: ev.Key, Register: &winner, Epoch: r.epoch}, nil)
@@ -723,8 +834,8 @@ func (r *Room) applyCluster(ev ClusterEvent) {
 		// A snapshot is a set of registers, not an authoritative replacement:
 		// join per key so concurrent local writes are preserved (CRDT merge).
 		for k, reg := range ev.State {
-			if _, ok := r.applyAndPersist(k, reg); !ok {
-				LogEvent("cluster_persist_error", map[string]any{"room": r.id, "key": k, "from": ev.From})
+			if _, err := r.applyAndPersist(k, reg); err != nil {
+				LogEvent("cluster_persist_error", map[string]any{"room": r.id, "key": k, "from": ev.From, "error": err.Error()})
 			}
 		}
 		r.broadcast(Outbound{Type: msgSnapshot, State: r.doc.Snapshot(), Epoch: r.epoch}, nil)
@@ -766,7 +877,22 @@ func (r *Room) broadcast(o Outbound, except *Client) {
 	}
 }
 
+// rejectClient sends one terminal error and closes the client's queue. Used
+// for admission failures that happen after the websocket upgrade.
+func (r *Room) rejectClient(cl *Client, reason string) {
+	if cl == nil || cl.dead {
+		return
+	}
+	data, _ := json.Marshal(reason)
+	r.sendTo(cl, Outbound{Type: msgError, Data: data})
+	cl.dead = true
+	close(cl.send)
+}
+
 func (r *Room) sendTo(cl *Client, o Outbound) {
+	if cl == nil || cl.dead {
+		return
+	}
 	if o.Protocol == 0 {
 		o.Protocol = protocolVersion
 	}
@@ -797,11 +923,26 @@ func (r *Room) trackSent(cl *Client, o Outbound) {
 }
 
 func (r *Room) deliver(cl *Client, b []byte) {
+	if cl == nil || cl.dead {
+		return
+	}
 	if r.hub != nil && r.hub.metrics != nil {
 		r.hub.metrics.outboundFrameBytes.observe(float64(len(b)))
 	}
+	n := int64(len(b))
+	if cl.maxQueueBytes > 0 {
+		queued := cl.queuedBytes.Load()
+		// Permit one oversized frame when nothing is queued (a full snapshot
+		// may legitimately exceed the steady-state budget), but never let the
+		// queue grow past the budget once it holds data.
+		if queued > 0 && queued+n > cl.maxQueueBytes {
+			r.removeClient(cl)
+			return
+		}
+	}
 	select {
 	case cl.send <- b:
+		cl.queuedBytes.Add(n)
 	default:
 		// Slow/stuck client: evict it. Safe to delete during range in Go.
 		r.removeClient(cl)
@@ -812,11 +953,13 @@ func (r *Room) removeClient(cl *Client) bool {
 	if _, ok := r.clients[cl]; !ok {
 		delete(r.acked, cl)
 		delete(r.sent, cl)
+		cl.dead = true
 		return false
 	}
 	delete(r.clients, cl)
 	delete(r.acked, cl)
 	delete(r.sent, cl)
+	cl.dead = true
 	close(cl.send)
 	if len(r.clients) == 0 {
 		r.armIdle()
@@ -843,7 +986,9 @@ type Config struct {
 	ClusterAllowlist     []string      // CIDRs; empty = allow any peer
 	TrustProxyHeaders    bool          // trust X-Forwarded-For from a proxy
 	ProxyHops            int           // trusted proxies between us and the client (0 = 1); XFF is parsed right-to-left
-	Origins              []string      // empty = allow any Origin
+	Origins              []string      // exact allowed Origins (scheme://host[:port])
+	RequireOrigins       bool          // reject browser upgrades without a configured, matching Origin
+	AllowAnyOrigin       bool          // explicit escape hatch for non-browser clients
 	MaxClients           int           // 0 = unlimited per room; main.go defaults this to 256
 	MaxRooms             int           // 0 = unlimited live rooms; main.go defaults this to 10000
 	MaxLogBytes          int64         // 0 = unlimited room log size before compaction
@@ -854,6 +999,7 @@ type Config struct {
 	Planner              *ShardPlanner
 	Bus                  ClusterBus
 	ClusterPeers         []string
+	ClusterAllowHTTP     bool // explicitly allow plaintext cluster relay (private network only)
 	ClusterPath          string
 	ClusterHTTP          *http.Client
 	AntiEntropyInterval  time.Duration // <=0 = disabled
@@ -861,6 +1007,7 @@ type Config struct {
 	WebhookSecret        string
 	WebhookTimeout       time.Duration
 	WebhookQueue         int
+	WebhookAllowPrivate  bool // explicitly allow private/loopback webhook destinations
 }
 
 // Validate reports clustering configuration that cannot work. Single-node mode
@@ -875,6 +1022,20 @@ func (c Config) Validate() error {
 	if _, err := parseCIDRs(c.ClusterAllowlist); err != nil {
 		return fmt.Errorf("-cluster-allowlist (SYNCWELL_CLUSTER_ALLOWLIST): %w", err)
 	}
+	if c.AllowAnyOrigin && len(c.Origins) > 0 {
+		return errors.New("-allow-any-origin cannot be combined with -origins (SYNCWELL_ALLOW_ANY_ORIGIN/SYNCWELL_ORIGINS)")
+	}
+	if c.RequireOrigins && len(c.Origins) == 0 && !c.AllowAnyOrigin {
+		return errors.New("-require-origins requires at least one -origins entry (SYNCWELL_REQUIRE_ORIGINS/SYNCWELL_ORIGINS)")
+	}
+	for _, origin := range c.Origins {
+		if _, err := normalizeOrigin(origin); err != nil {
+			return fmt.Errorf("-origins entry %q: %w", origin, err)
+		}
+	}
+	if err := ValidateWebhookURLs(c.WebhookURLs, c.WebhookAllowPrivate); err != nil {
+		return fmt.Errorf("-webhook-urls (SYNCWELL_WEBHOOK_URLS): %w", err)
+	}
 	if len(c.ClusterPeers) == 0 {
 		return nil
 	}
@@ -882,8 +1043,28 @@ func (c Config) Validate() error {
 	if id == "" || id == "local" {
 		return errors.New("clustering requires -node-id set to a unique value (SYNCWELL_NODE_ID; not the default \"local\")")
 	}
-	if c.Secret != "" && c.AdminToken == "" {
-		return errors.New("clustering with -secret requires -admin-token (SYNCWELL_ADMIN_TOKEN) so peers can authenticate")
+	if c.AdminToken == "" {
+		return errors.New("clustering requires -admin-token (SYNCWELL_ADMIN_TOKEN) so peers can authenticate")
+	}
+	for _, raw := range c.ClusterPeers {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("-cluster-peers entry %q: %w", raw, err)
+		}
+		scheme := strings.ToLower(u.Scheme)
+		if scheme != "https" && scheme != "http" {
+			return fmt.Errorf("-cluster-peers entry %q must use https", raw)
+		}
+		if u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("-cluster-peers entry %q must be a URL with no credentials, query, or fragment", raw)
+		}
+		if scheme == "http" && !c.ClusterAllowHTTP && !loopbackHost(u.Hostname()) {
+			return fmt.Errorf("-cluster-peers entry %q uses plaintext http; use https or set -cluster-insecure for a trusted private network", raw)
+		}
 	}
 	return nil
 }
@@ -943,6 +1124,12 @@ func newHubMetrics() *hubMetrics {
 
 // NewHub returns a hub for the given config.
 func NewHub(cfg Config) *Hub {
+	if cfg.MaxClients < 0 {
+		cfg.MaxClients = DefaultMaxClients
+	}
+	if cfg.MaxRooms < 0 {
+		cfg.MaxRooms = DefaultMaxRooms
+	}
 	if cfg.CompactEvery <= 0 {
 		cfg.CompactEvery = defaultCompactEvery
 	}
@@ -1004,10 +1191,11 @@ func NewHub(cfg Config) *Hub {
 		wsLimiter:      newTokenLimiter(wsRate, wsBurst, cfg.AdminMaxFailures, cfg.AdminLockout),
 		metrics:        newHubMetrics(),
 		webhooks: NewWebhookDispatcher(WebhookConfig{
-			URLs:    cfg.WebhookURLs,
-			Secret:  cfg.WebhookSecret,
-			Timeout: cfg.WebhookTimeout,
-			Queue:   cfg.WebhookQueue,
+			URLs:         cfg.WebhookURLs,
+			Secret:       cfg.WebhookSecret,
+			Timeout:      cfg.WebhookTimeout,
+			Queue:        cfg.WebhookQueue,
+			AllowPrivate: cfg.WebhookAllowPrivate,
 		}),
 	}
 	if cfg.AntiEntropyInterval > 0 && len(cfg.ClusterPeers) > 0 {
@@ -1152,13 +1340,64 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// authorize enforces origin allow-listing and room-token checks before upgrade.
+// normalizeOrigin accepts only a bare HTTP(S) origin and returns a canonical
+// scheme://host[:port] form. Wildcards, paths, credentials, and opaque values
+// are rejected: the origin policy compares exact origins, never substrings.
+func normalizeOrigin(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "*" || strings.Contains(raw, "*") {
+		return "", errors.New("origin must be an exact scheme://host[:port] value")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse origin: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return "", errors.New("origin must use http or https")
+	}
+	if u.Host == "" || u.User != nil || u.Opaque != "" || u.Path != "" ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", errors.New("origin must be scheme://host[:port] with no path, query, fragment, or credentials")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	// Browsers omit default ports from the Origin header, so canonicalize them
+	// away rather than making an operator's explicit :443 never match.
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port == "" {
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
+		return scheme + "://" + host, nil
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), nil
+}
+
+// originAllowed enforces the exact origin allow-list. Missing Origin headers
+// are rejected when an allow-list is configured (RequireOrigins or origins
+// present); AllowAnyOrigin is an explicit, documented escape hatch.
 func (h *Hub) originAllowed(origin string) bool {
-	if len(h.cfg.Origins) == 0 || origin == "" {
+	if h.cfg.AllowAnyOrigin {
 		return true
 	}
-	for _, o := range h.cfg.Origins {
-		if o == origin {
+	if len(h.cfg.Origins) == 0 {
+		return !h.cfg.RequireOrigins
+	}
+	if origin == "" {
+		return false
+	}
+	got, err := normalizeOrigin(origin)
+	if err != nil {
+		return false
+	}
+	for _, allowed := range h.cfg.Origins {
+		want, err := normalizeOrigin(allowed)
+		if err == nil && want == got {
 			return true
 		}
 	}
@@ -1219,8 +1458,18 @@ func (h *Hub) EvictRoom(id string) bool {
 
 // Stats queries every room's owner goroutine and returns a snapshot map. Safe to
 // call from an HTTP handler — it communicates with rooms by message, not shared
-// memory.
+// memory. The query is bounded so one wedged room cannot hang an admin request.
 func (h *Hub) Stats() map[string]RoomStats {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, _ := h.StatsContext(ctx)
+	return out
+}
+
+// StatsContext is Stats with a caller-supplied deadline. It returns ok=false if
+// the deadline expired before every room replied; the returned map is a
+// best-effort partial snapshot.
+func (h *Hub) StatsContext(ctx context.Context) (map[string]RoomStats, bool) {
 	h.mu.Lock()
 	ids := make([]string, 0, len(h.rooms))
 	rooms := make([]*Room, 0, len(h.rooms))
@@ -1237,13 +1486,17 @@ func (h *Hub) Stats() map[string]RoomStats {
 		case r.cmds <- command{kind: "stats", reply: reply}:
 		case <-r.done:
 			continue
+		case <-ctx.Done():
+			return out, false
 		}
 		select {
 		case out[ids[i]] = <-reply:
 		case <-r.done:
+		case <-ctx.Done():
+			return out, false
 		}
 	}
-	return out
+	return out, true
 }
 
 var clientSeq uint64

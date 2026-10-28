@@ -185,3 +185,54 @@ func TestConvergenceUnderConcurrentEdits(t *testing.T) {
 		t.Fatal("disjoint edits lost")
 	}
 }
+
+func TestSizeTracksUpdatesAndTombstones(t *testing.T) {
+	m := NewLWWMap()
+	if n, b := m.Size(); n != 0 || b != 0 {
+		t.Fatalf("empty size = %d/%d", n, b)
+	}
+	m.Set("k", val("aaaa"), Timestamp{Counter: 1, Node: "A"})
+	n1, b1 := m.Size()
+	if n1 != 1 || b1 <= 0 {
+		t.Fatalf("after set size = %d/%d", n1, b1)
+	}
+	m.Set("k", val("bb"), Timestamp{Counter: 2, Node: "A"})
+	n2, b2 := m.Size()
+	if n2 != 1 || b2 >= b1 {
+		t.Fatalf("overwrite did not shrink accounting: %d/%d -> %d/%d", n1, b1, n2, b2)
+	}
+	m.Delete("k", Timestamp{Counter: 3, Node: "A"})
+	if n, _ := m.Size(); n != 1 {
+		t.Fatalf("tombstone entries = %d, want 1", n)
+	}
+	if removed := m.CollectTombstones(4); removed != 1 {
+		t.Fatalf("removed = %d", removed)
+	}
+	if n, b := m.Size(); n != 0 || b != 0 {
+		t.Fatalf("size after GC = %d/%d, want 0/0", n, b)
+	}
+}
+
+func TestFitsUsesWinningRegister(t *testing.T) {
+	m := NewLWWMap()
+	m.Set("k", val("long-value"), Timestamp{Counter: 5, Node: "A"})
+	entries, bytes := m.Size()
+
+	// A stale candidate must not be rejected just because it is large.
+	large := Register{Value: val("a-much-longer-value"), TS: Timestamp{Counter: 1, Node: "B"}}
+	if !m.Fits("k", large, entries, bytes) {
+		t.Fatal("stale candidate spuriously rejected")
+	}
+	// A new key at the entry cap is rejected.
+	if m.Fits("new", Register{Value: val("x"), TS: Timestamp{Counter: 9, Node: "A"}}, entries, 0) {
+		t.Fatal("new key accepted at entry cap")
+	}
+	// A winning larger value is rejected when it would exceed the byte cap.
+	bigger := Register{Value: val("a-much-longer-value"), TS: Timestamp{Counter: 9, Node: "A"}}
+	if m.Fits("k", bigger, 0, bytes) {
+		t.Fatal("oversized winning value accepted at byte cap")
+	}
+	if _, b := m.Size(); b != bytes {
+		t.Fatalf("Fits mutated size: %d != %d", b, bytes)
+	}
+}

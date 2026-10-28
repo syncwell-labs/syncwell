@@ -252,6 +252,15 @@ func requireEOF(dec *json.Decoder) error {
 // text node, presence blob) without changing the merge logic.
 type LWWMap struct {
 	entries map[string]Register
+	bytes   int64
+}
+
+// registerOverhead approximates the per-entry bookkeeping cost (map slot,
+// string headers, timestamp fields) in addition to the key/value/node bytes.
+const registerOverhead = 64
+
+func registerSize(key string, r Register) int64 {
+	return int64(len(key)+len(r.Value)+len(r.TS.Node)) + registerOverhead
 }
 
 // NewLWWMap returns an empty map.
@@ -269,10 +278,62 @@ func (m *LWWMap) Delete(key string, ts Timestamp) {
 
 func (m *LWWMap) apply(key string, candidate Register) {
 	if cur, ok := m.entries[key]; ok {
-		m.entries[key] = cur.merge(candidate)
+		winner := cur.merge(candidate)
+		if winner.Equal(cur) {
+			return
+		}
+		m.bytes += registerSize(key, winner) - registerSize(key, cur)
+		m.entries[key] = winner
 		return
 	}
 	m.entries[key] = candidate
+	m.bytes += registerSize(key, candidate)
+}
+
+// Size returns the number of registers (including tombstones) and an
+// approximate byte footprint of the map.
+func (m *LWWMap) Size() (entries int, bytes int64) {
+	return len(m.entries), m.bytes
+}
+
+// SnapshotSize reports the number of registers and the same approximate byte
+// accounting as Size for a raw snapshot. Used to validate persisted state
+// before it is adopted by a room.
+func SnapshotSize(snap map[string]Register) (entries int, bytes int64) {
+	for k, v := range snap {
+		bytes += registerSize(k, v)
+	}
+	return len(snap), bytes
+}
+
+// Fits reports whether applying candidate to key would keep the map within the
+// supplied entry and byte budgets. A non-positive budget means unlimited. The
+// check uses the CRDT winner, so a stale incoming register never causes a
+// spurious rejection.
+func (m *LWWMap) Fits(key string, candidate Register, maxEntries int, maxBytes int64) bool {
+	cur, ok := m.entries[key]
+	winner := candidate
+	if ok {
+		winner = cur.merge(candidate)
+		if winner.Equal(cur) {
+			return true
+		}
+	}
+	if !ok && maxEntries > 0 && len(m.entries) >= maxEntries {
+		return false
+	}
+	if maxBytes > 0 {
+		var delta int64
+		if ok {
+			delta = registerSize(key, winner) - registerSize(key, cur)
+		} else {
+			delta = registerSize(key, winner)
+		}
+		if m.bytes+delta > maxBytes {
+			return false
+		}
+	}
+	return true
 }
 
 // Get returns the live value for key, or (nil,false) if absent or tombstoned.
@@ -316,8 +377,10 @@ func (m *LWWMap) Snapshot() map[string]Register {
 // Load replaces the map's state from a snapshot (used on restart / on join).
 func (m *LWWMap) Load(snap map[string]Register) {
 	m.entries = make(map[string]Register, len(snap))
+	m.bytes = 0
 	for k, v := range snap {
 		m.entries[k] = v
+		m.bytes += registerSize(k, v)
 	}
 }
 
@@ -342,6 +405,7 @@ func (m *LWWMap) CollectTombstones(below uint64) int {
 	for k, r := range m.entries {
 		if r.Deleted && r.TS.Counter < below {
 			delete(m.entries, k)
+			m.bytes -= registerSize(k, r)
 			n++
 		}
 	}

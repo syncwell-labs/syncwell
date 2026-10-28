@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -65,5 +66,21 @@ func TestTracingMiddlewareRecordsStatus(t *testing.T) {
 	}
 	if got != http.StatusServiceUnavailable {
 		t.Fatalf("status attribute = %d", got)
+	}
+}
+
+func TestTracingMiddlewareSetsSecurityHeaders(t *testing.T) {
+	rec := httptest.NewRecorder()
+	TracingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q", got)
+	}
+	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("X-Frame-Options = %q", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+		t.Fatalf("Content-Security-Policy = %q", got)
 	}
 }

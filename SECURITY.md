@@ -51,7 +51,14 @@ Out of scope:
   and `/cluster/event`; it is auto-generated on public binds when unset.
 - Use `-secret-previous` for zero-downtime room-secret rotation, then remove the
   old secret once tokens have expired.
-- Set `-origins` to your app's origin(s) rather than allowing any origin.
+- Set `-origins` to your app's exact origin(s). Public non-`-insecure` binds now
+  fail closed without an Origin policy; `-allow-any-origin` is an explicit
+  unsafe override for non-browser clients.
+- Webhook URLs must be public `https` endpoints. Private/loopback/metadata
+  addresses are blocked at startup, on redirect, and at connect time unless
+  `-webhook-allow-private` is set.
+- Prefer `Authorization: Bearer` or the `syncwell.token.<token>` WebSocket
+  subprotocol over `?token=` to keep credentials out of proxy access logs.
 - Keep the admin guard defaults (`-admin-rate`, `-admin-max-failures`,
   `-admin-lockout`) and optionally restrict `/stats`/`/metrics` and
   `/cluster/event` with `-admin-allowlist`/`-cluster-allowlist`.

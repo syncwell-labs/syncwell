@@ -86,6 +86,20 @@ Sizes: **S** ≤ 1 day, **M** 2–4 days, **L** 1–2 weeks, **XL** > 2 weeks.
   refresh, and launch post publication require owner credentials and a released
   tag.
 
+- **Post-plan production hardening — complete (2026-10-28).** Fail-closed
+  Origin policy (exact, normalized, default-port-aware) on public binds and
+  admin actions; SSRF-safe egress for webhooks and OIDC (startup + redirect +
+  dial-time DNS-rebinding checks, proxies disabled); per-room document
+  entry/byte budgets and per-client outbound queue budgets; `-require-auth` and
+  `-cluster-insecure`; HTTPS-only cluster peers; token carriers that avoid URLs
+  (`Authorization` / WebSocket subprotocol); request body limits; bounded stats
+  collection; hardened HTTP server timeouts, TLS 1.3, and security headers;
+  log-load hardening (corrupt/over-budget state is refused without overwriting
+  the original log, ambiguous legacy layout is opt-in); admin/ops surfaces
+  moved behind private-network defaults in the shipped proxy configs. Verified
+  by `make all`, `make cover-check`, `make browser-e2e-chromium`, and
+  `make browser-e2e-firefox`.
+
 ---
 
 ## Phase 0 — Guardrails (make "green" mean something)

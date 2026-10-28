@@ -295,3 +295,79 @@ func TestServeWS_MessageRateLimit(t *testing.T) {
 		t.Logf("rate limit test: got message type %d instead of close, may be expected", mt)
 	}
 }
+
+func TestServeWSRejectsWildcardRoom(t *testing.T) {
+	h := NewHub(Config{})
+	rec := httptest.NewRecorder()
+	h.ServeWS(rec, httptest.NewRequest(http.MethodGet, "/ws?room=*", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServeWSRequiresMatchingOriginWhenConfigured(t *testing.T) {
+	h := NewHub(Config{Origins: []string{"https://app.example.com"}})
+	ts := httptest.NewServer(http.HandlerFunc(h.ServeWS))
+	defer ts.Close()
+
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	_, resp, err := dialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/ws?room=origin", nil)
+	if err == nil {
+		t.Fatal("expected missing Origin to be rejected")
+	}
+	if resp != nil {
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("missing Origin status = %d, want 403", resp.StatusCode)
+		}
+	}
+
+	_, resp, err = dialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/ws?room=origin", http.Header{
+		"Origin": {"https://app.example.com.evil.test"},
+	})
+	if err == nil {
+		t.Fatal("expected lookalike Origin to be rejected")
+	}
+	if resp != nil {
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("lookalike Origin status = %d, want 403", resp.StatusCode)
+		}
+	}
+}
+
+func TestServeWSTokenCarriers(t *testing.T) {
+	secret := "transport-secret"
+	token := SignAccessToken(secret, "carrier-room", time.Now().Add(time.Hour).Unix(), []string{CapRead}, "")
+	h := NewHub(Config{Secret: secret})
+	ts := httptest.NewServer(http.HandlerFunc(h.ServeWS))
+	defer ts.Close()
+	base := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?room=carrier-room"
+
+	conn, _, err := websocket.DefaultDialer.Dial(base, http.Header{
+		"Authorization": {"Bearer " + token},
+	})
+	if err != nil {
+		t.Fatalf("Authorization carrier rejected: %v", err)
+	}
+	conn.Close()
+
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second, Subprotocols: []string{"syncwell", "syncwell.token." + token}}
+	conn, resp, err := dialer.Dial(base, nil)
+	if err != nil {
+		t.Fatalf("subprotocol carrier rejected: %v", err)
+	}
+	defer conn.Close()
+	if resp == nil || resp.Header.Get("Sec-WebSocket-Protocol") != "syncwell" {
+		t.Fatalf("selected subprotocol = %q, want syncwell", func() string {
+			if resp == nil {
+				return ""
+			}
+			return resp.Header.Get("Sec-WebSocket-Protocol")
+		}())
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read snapshot after subprotocol auth: %v", err)
+	}
+}

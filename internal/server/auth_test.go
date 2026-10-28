@@ -128,3 +128,28 @@ func TestAccessTokenRoundTripWithAdminCapability(t *testing.T) {
 		t.Fatal("admin-only token unexpectedly gained other capabilities")
 	}
 }
+
+func TestValidateCapsListRejectsUnknownAndEmpty(t *testing.T) {
+	if _, err := ValidateCapsList([]string{"read", "writee"}); err == nil {
+		t.Fatal("unknown capability accepted")
+	}
+	if _, err := ValidateCapsList([]string{" "}); err == nil {
+		t.Fatal("empty capability list accepted")
+	}
+	got, err := ValidateCapsList([]string{"admin", "read", "read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != CapRead || got[1] != CapAdmin {
+		t.Fatalf("unexpected normalized caps: %v", got)
+	}
+}
+
+func TestParseCapsFailsClosedForUnknownNonEmptyList(t *testing.T) {
+	if caps := parseCapsCSV("bogus"); len(caps) != 0 {
+		t.Fatalf("unknown caps granted: %v", caps)
+	}
+	if caps := parseCapsCSV(""); !caps[CapRead] || !caps[CapWrite] || !caps[CapPresence] {
+		t.Fatalf("empty caps lost legacy default: %v", caps)
+	}
+}

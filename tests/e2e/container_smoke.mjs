@@ -75,6 +75,8 @@ async function main() {
       `SYNCWELL_SECRET=${SECRET}`,
       "-e",
       `SYNCWELL_ADMIN_TOKEN=${ADMIN}`,
+      "-e",
+      "SYNCWELL_ALLOW_ANY_ORIGIN=1",
       IMAGE,
     ]);
     await waitHealthy(PORT, { attempts: 60, interval: 250 });

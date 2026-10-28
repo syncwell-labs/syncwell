@@ -60,6 +60,19 @@ docker run --rm -v syncwell-data:/data busybox chown -R 65532:65532 /data
 
 Render Free has no shell or persistent disk, so there is nothing to chown there.
 
+The systemd unit expects `/etc/syncwell.env` (mode `0600`) and starts with
+`-require-auth`, so it fails closed if credentials are missing:
+
+```bash
+sudo install -m 0600 deploy/systemd/syncwell.env.example /etc/syncwell.env
+sudoedit /etc/syncwell.env   # set SYNCWELL_SECRET and SYNCWELL_ADMIN_TOKEN
+```
+
+The shipped nginx/Caddy configs keep `/admin` and `/stats`/`/metrics` on the
+private network by default; adjust the allow-lists if you administer remotely.
+Because the proxy sets `X-Forwarded-For`, the systemd unit also sets
+`SYNCWELL_TRUST_PROXY=true` and `SYNCWELL_PROXY_HOPS=1`.
+
 ## TLS
 
 Two supported paths:
@@ -103,7 +116,22 @@ effect there.
 
 Clustering requires an explicit shared `-admin-token`/`SYNCWELL_ADMIN_TOKEN`
 (peers authenticate with it); the server refuses to auto-generate one when
-`-cluster-peers` is set, because per-node values would not match.
+`-cluster-peers` is set, because per-node values would not match. Peer URLs must
+use `https`; if the relay runs on a trusted private network with no TLS, opt in
+explicitly with `-cluster-insecure`/`SYNCWELL_CLUSTER_INSECURE` and accept that
+the admin token crosses the wire in plaintext.
+
+Public, non-`-insecure` binds now require an explicit Origin policy: set
+`-origins` (or `SYNCWELL_ORIGINS`) to the exact `scheme://host[:port]` values
+of your browser apps. The historical "any origin" default is available only via
+`-allow-any-origin`, intended for non-browser clients. Requests without an
+`Origin` header are rejected once an allow-list is configured.
+
+Webhook destinations must be public `https` URLs. Private, loopback, link-local,
+and metadata addresses are rejected at startup and again on every resolved
+address at connect time (including redirects), preventing DNS rebinding and
+SSRF. For a trusted receiver on the local network, set
+`-webhook-allow-private` explicitly.
 
 ### External identity (OIDC)
 
@@ -121,8 +149,10 @@ syncwell \
 
 - JWKS is discovered from `<issuer>/.well-known/openid-configuration`; override
   with `-oidc-jwks https://idp.example/jwks`.
-- Clients pass the JWT exactly like a room token (`?token=` for the WebSocket);
-  admin endpoints accept it as `Authorization: Bearer`.
+- Clients pass the JWT exactly like a room token: preferably
+  `Authorization: Bearer` or `Sec-WebSocket-Protocol: syncwell.token.<jwt>`,
+  with `?token=` retained for older browser clients. Admin endpoints accept
+  `Authorization: Bearer` only.
 - `syncwell_room` must equal the requested room. A `*` room claim is treated
   as an admin-only credential: it works for admin endpoints
   (`Authorization: Bearer`) but is rejected for room-scoped WebSocket access.
@@ -151,6 +181,7 @@ document keys, so only send them to a trusted collector.
 | `PORT` / `SYNCWELL_ADDR` | `-addr` | `:8080` |
 | `SYNCWELL_DATA` | `-data` | in-memory |
 | `SYNCWELL_SECRET` | `-secret` | generated once on public binds |
+| `SYNCWELL_REQUIRE_AUTH` | `-require-auth` | `false` (fail startup without room auth) |
 | `SYNCWELL_SECRET_PREVIOUS` | `-secret-previous` | none (rotation window) |
 | `SYNCWELL_ADMIN_TOKEN` | `-admin-token` | generated once on public binds |
 | `SYNCWELL_OIDC_ISSUER` | `-oidc-issuer` | empty (OIDC disabled) |
@@ -175,22 +206,30 @@ document keys, so only send them to a trusted collector.
 | `SYNCWELL_WEBHOOK_SECRET` | `-webhook-secret` | unsigned webhooks |
 | `SYNCWELL_WEBHOOK_TIMEOUT` | `-webhook-timeout` | `5s` |
 | `SYNCWELL_WEBHOOK_QUEUE` | `-webhook-queue` | `256` |
-| `SYNCWELL_ORIGINS` | `-origins` | any origin |
+| `SYNCWELL_WEBHOOK_ALLOW_PRIVATE` | `-webhook-allow-private` | `false` (SSRF protection) |
+| `SYNCWELL_ORIGINS` | `-origins` | none (required on public non-insecure binds) |
+| `SYNCWELL_REQUIRE_ORIGINS` | `-require-origins` | `true` on public non-insecure binds |
+| `SYNCWELL_ALLOW_ANY_ORIGIN` | `-allow-any-origin` | `false` (explicit unsafe override) |
 | `SYNCWELL_FSYNC` | `-fsync` | `batch` |
 | `SYNCWELL_FSYNC_INTERVAL` | `-fsync-interval` | `5ms` |
 | `SYNCWELL_MAX_LOG_BYTES` | `-max-log-bytes` | `67108864` |
+| `SYNCWELL_MIGRATE_LEGACY_V1` | `-migrate-legacy-v1` | `false` (opt-in import of ambiguous v1 filenames) |
 | `SYNCWELL_MAX_CLIENTS` | `-max-clients` | `256` (0 = unlimited) |
-| `SYNCWELL_MAX_ROOMS` | `-max-rooms` | `10000` (0 = unlimited) |
+| `SYNCWELL_MAX_ROOMS` | `-max-rooms` | `10000` (0 = unlimited; negative = default) |
+| `SYNCWELL_MAX_DOC_ENTRIES` | `-max-doc-entries` | `100000` registers per room |
+| `SYNCWELL_MAX_DOC_BYTES` | `-max-doc-bytes` | `16777216` approx bytes per room |
+| `SYNCWELL_MAX_SEND_BYTES` | `-max-send-bytes` | `4194304` queued bytes per client |
 | `SYNCWELL_MAX_MESSAGE_BYTES` | `-max-message-bytes` | server default |
 | `SYNCWELL_MAX_MESSAGES_PER_SECOND` | `-max-messages-per-second` | server default |
-| `SYNCWELL_MAX_STATE_ENTRIES` | `-max-state-entries` | server default |
+| `SYNCWELL_MAX_STATE_ENTRIES` | `-max-state-entries` | server default (per merge/hello frame) |
 | `SYNCWELL_MAX_ROOM_ID_BYTES` / `_KEY_BYTES` / `_NODE_BYTES` / `_VALUE_BYTES` / `_PRESENCE_BYTES` | `-max-*-bytes` | server defaults |
 | `SYNCWELL_IDLE_ROOM_TTL` | `-idle-room-ttl` | `60s` (negative disables) |
 | `SYNCWELL_COMPACT` | `-compact` | `256` |
 | `SYNCWELL_STATIC` / `SYNCWELL_SDK` | `-static` / `-sdk` | `examples/demos` / `clients/javascript` |
 | `SYNCWELL_NODE_ID` | `-node-id` | unset (single node) |
 | `SYNCWELL_NODE_PEERS` | `-node-peers` | none (placement by node id) |
-| `SYNCWELL_CLUSTER_PEERS` | `-cluster-peers` | single node |
+| `SYNCWELL_CLUSTER_PEERS` | `-cluster-peers` | single node (https peers required) |
+| `SYNCWELL_CLUSTER_INSECURE` | `-cluster-insecure` | `false` (allow http peers on a trusted private network) |
 | `SYNCWELL_CLUSTER_PATH` | `-cluster-path` | `/cluster/event` |
 | `SYNCWELL_ANTI_ENTROPY` | `-anti-entropy` | `30s` |
 | `SYNCWELL_WS_RATE` | `-ws-rate` | 300 upgrades/min per IP |

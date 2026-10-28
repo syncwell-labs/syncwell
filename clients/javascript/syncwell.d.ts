@@ -30,6 +30,8 @@ export interface WebSocketConstructor {
 export interface SyncwellOptions {
   /** Room token when the server runs with `-secret`. */
   token?: string;
+  /** Send the token via `Sec-WebSocket-Protocol` instead of the query string. */
+  tokenTransport?: "query" | "subprotocol";
   /** Stable id used as the CRDT node id; keep it stable with `persist`. */
   clientId?: string;
   /** Persist the local replica + Lamport clock in `storage`. */

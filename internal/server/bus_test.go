@@ -264,7 +264,9 @@ func TestClusterConfigValidate(t *testing.T) {
 		{"cluster without node id", Config{ClusterPeers: []string{"http://peer"}}, true},
 		{"cluster with default node id", Config{NodeID: "local", ClusterPeers: []string{"http://peer"}}, true},
 		{"cluster with secret but no admin token", Config{NodeID: "a", Secret: "s", ClusterPeers: []string{"http://peer"}}, true},
-		{"cluster valid", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"http://peer"}}, false},
+		{"cluster valid", Config{NodeID: "a", AdminToken: "t", ClusterAllowHTTP: true, ClusterPeers: []string{"http://peer"}}, false},
+		{"cluster plaintext http", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"http://peer"}}, true},
+		{"cluster loopback http", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"http://127.0.0.1:8080"}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

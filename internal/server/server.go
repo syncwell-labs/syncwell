@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -21,9 +22,10 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	// Dev default: accept any origin. Lock this down behind an all‑list in
-	// production (see docs/product/ROADMAP.md → auth hooks).
-	CheckOrigin: func(*http.Request) bool { return true },
+	// OriginPolicy is enforced explicitly before Upgrade; gorilla's own check is
+	// disabled so the policy can also reject missing Origin headers.
+	CheckOrigin:      func(*http.Request) bool { return true },
+	HandshakeTimeout: 10 * time.Second,
 }
 
 const (
@@ -39,6 +41,9 @@ const (
 	maxPresenceSize = 64 * 1024
 	maxStateEntries = 10000
 	maxMessagesRate = 120
+	maxDocEntries   = 100000
+	maxDocBytes     = 16 << 20 // 16 MiB approximate in-memory document cap
+	maxSendBytes    = 4 << 20  // 4 MiB queued outbound bytes per client
 )
 
 // Limits bounds untrusted client input. Any zero field is replaced with the
@@ -52,6 +57,9 @@ type Limits struct {
 	MaxPresenceBytes     int
 	MaxStateEntries      int
 	MaxMessagesPerSecond int
+	MaxDocEntries        int   // total registers (incl. tombstones) per room
+	MaxDocBytes          int64 // approximate in-memory bytes per room
+	MaxSendBytes         int64 // queued outbound bytes per client
 }
 
 func (l Limits) withDefaults() Limits {
@@ -79,6 +87,15 @@ func (l Limits) withDefaults() Limits {
 	if l.MaxMessagesPerSecond <= 0 {
 		l.MaxMessagesPerSecond = maxMessagesRate
 	}
+	if l.MaxDocEntries <= 0 {
+		l.MaxDocEntries = maxDocEntries
+	}
+	if l.MaxDocBytes <= 0 {
+		l.MaxDocBytes = maxDocBytes
+	}
+	if l.MaxSendBytes <= 0 {
+		l.MaxSendBytes = maxSendBytes
+	}
 	return l
 }
 
@@ -89,8 +106,15 @@ func (h *Hub) ServeStats(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	stats, ok := h.StatsContext(ctx)
+	if !ok {
+		http.Error(w, "stats timeout", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(h.Stats())
+	_ = json.NewEncoder(w).Encode(stats)
 }
 
 // ServeMetrics writes a tiny Prometheus-style text snapshot of the current room
@@ -100,7 +124,13 @@ func (h *Hub) ServeMetrics(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	stats := h.Stats()
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	stats, ok := h.StatsContext(ctx)
+	if !ok {
+		http.Error(w, "stats timeout", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	fmt.Fprintln(w, "# HELP syncwell_rooms Number of open rooms")
 	fmt.Fprintln(w, "# TYPE syncwell_rooms gauge")
@@ -192,6 +222,10 @@ func (h *Hub) ServeClusterEvent(w http.ResponseWriter, req *http.Request) {
 	}
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !originOK(req.Header.Get("Origin"), h.cfg.Origins) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
 	}
 	// Cluster events can inject writes/presence into any room, so a peer must
@@ -311,6 +345,36 @@ func (h *Hub) adminAllowed(req *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(h.cfg.AdminToken)) == 1
 }
 
+// websocketToken extracts a room token without requiring it in the query
+// string. Precedence: Authorization: Bearer, then Sec-WebSocket-Protocol
+// ("syncwell.token.<token>"), then the legacy ?token= parameter. The returned
+// protocol value is echoed in the handshake response so standards-compliant
+// clients (including browsers) see their offered protocol accepted.
+func websocketToken(req *http.Request) (token, protocol string) {
+	if auth := req.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	}
+	selected := ""
+	for _, raw := range strings.Split(req.Header.Get("Sec-WebSocket-Protocol"), ",") {
+		p := strings.TrimSpace(raw)
+		switch {
+		case p == "syncwell":
+			selected = "syncwell"
+		case strings.HasPrefix(p, "syncwell.token."):
+			if token == "" {
+				token = strings.TrimPrefix(p, "syncwell.token.")
+			}
+			if selected == "" {
+				selected = p
+			}
+		}
+	}
+	if token == "" {
+		token = req.URL.Query().Get("token")
+	}
+	return strings.TrimSpace(token), selected
+}
+
 // ServeWS upgrades an HTTP request to a websocket and attaches it to the room
 // named by ?room=ID (default "default").
 func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
@@ -321,6 +385,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 	roomID := req.URL.Query().Get("room")
 	if roomID == "" {
 		roomID = "default"
+	}
+	// "*" is the admin-token scope, not a real collaboration room. Refuse it
+	// at the websocket edge so a wildcard OIDC token can never join a literal
+	// room named "*" and read every room's shared document.
+	if roomID == "*" {
+		http.Error(w, "invalid room", http.StatusBadRequest)
+		return
 	}
 	if len(roomID) > h.cfg.Limits.MaxRoomIDBytes {
 		http.Error(w, "room id too large", http.StatusRequestEntityTooLarge)
@@ -349,10 +420,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	// Room token (when a secret or OIDC is configured). Open dev mode gets full caps.
+	// Authorization and the Sec-WebSocket-Protocol carrier avoid putting
+	// credentials in the URL, where proxies and access logs would capture them.
+	token, wsProtocol := websocketToken(req)
 	var claims TokenClaims
 	if h.cfg.Secret != "" || h.cfg.OIDC != nil {
 		var ok bool
-		claims, ok = h.verifyToken(roomID, req.URL.Query().Get("token"), time.Now().Unix())
+		claims, ok = h.verifyToken(roomID, token, time.Now().Unix())
 		if !ok || !claims.Can(CapRead) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -377,7 +451,11 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "room capacity reached", http.StatusServiceUnavailable)
 		return
 	}
-	conn, err := upgrader.Upgrade(w, req, nil)
+	responseHeader := http.Header{}
+	if wsProtocol != "" {
+		responseHeader.Set("Sec-WebSocket-Protocol", wsProtocol)
+	}
+	conn, err := upgrader.Upgrade(w, req, responseHeader)
 	if err != nil {
 		span.SetStatus(codes.Error, "upgrade failed")
 		LogEvent("ws_upgrade_error", map[string]any{"error": err.Error(), "room": roomID})
@@ -385,12 +463,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 	}
 	span.SetAttributes(attribute.Int("syncwell.caps", len(claims.Caps)))
 	client := &Client{
-		id:     nextClientID(),
-		room:   room,
-		send:   make(chan []byte, 64),
-		claims: claims,
-		node:   nodeID,
-		delta:  req.URL.Query().Get("delta") == "1",
+		id:            nextClientID(),
+		room:          room,
+		send:          make(chan []byte, 64),
+		claims:        claims,
+		node:          nodeID,
+		delta:         req.URL.Query().Get("delta") == "1",
+		maxQueueBytes: h.cfg.Limits.MaxSendBytes,
 	}
 	LogEvent("ws_join", map[string]any{
 		"room":      roomID,
@@ -550,6 +629,9 @@ func validateRegister(reg crdt.Register, limits Limits) error {
 		return errProtocol("bad node")
 	}
 	if reg.Deleted {
+		if len(reg.Value) > 0 {
+			return errProtocol("tombstone must not carry a value")
+		}
 		return nil
 	}
 	if len(reg.Value) == 0 || len(reg.Value) > limits.MaxValueBytes || !json.Valid(reg.Value) {
@@ -578,7 +660,9 @@ func (c *Client) writePump(conn *websocket.Conn) {
 				_ = conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			err := conn.WriteMessage(websocket.TextMessage, msg)
+			c.queuedBytes.Add(-int64(len(msg)))
+			if err != nil {
 				return
 			}
 		case <-ticker.C:

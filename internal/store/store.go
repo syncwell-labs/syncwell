@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -86,8 +87,9 @@ func ParseFsyncMode(s string) (FsyncMode, error) {
 
 // Options configures a FileStore.
 type Options struct {
-	Fsync        FsyncMode
-	SyncInterval time.Duration // batch mode interval; <=0 = 5ms
+	Fsync           FsyncMode
+	SyncInterval    time.Duration // batch mode interval; <=0 = 5ms
+	MigrateLegacyV1 bool          // explicitly allow importing the ambiguous v1 sanitized filename layout
 }
 
 func (o Options) withDefaults() Options {
@@ -117,9 +119,10 @@ type BackupManifest struct {
 
 // FileStore is the default on-disk Store.
 type FileStore struct {
-	dir          string
-	fsync        FsyncMode
-	syncInterval time.Duration
+	dir             string
+	fsync           FsyncMode
+	syncInterval    time.Duration
+	migrateLegacyV1 bool
 
 	mu    sync.Mutex
 	files map[string]*os.File
@@ -145,15 +148,16 @@ func OpenWithOptions(dir string, opts Options) (*FileStore, error) {
 	}
 	opts = opts.withDefaults()
 	s := &FileStore{
-		dir:          dir,
-		fsync:        opts.Fsync,
-		syncInterval: opts.SyncInterval,
-		files:        map[string]*os.File{},
-		bufs:         map[string]*bufio.Writer{},
-		sizes:        map[string]int64{},
-		dirty:        map[string]struct{}{},
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
+		dir:             dir,
+		fsync:           opts.Fsync,
+		syncInterval:    opts.SyncInterval,
+		migrateLegacyV1: opts.MigrateLegacyV1,
+		files:           map[string]*os.File{},
+		bufs:            map[string]*bufio.Writer{},
+		sizes:           map[string]int64{},
+		dirty:           map[string]struct{}{},
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	go s.syncLoop()
 	return s, nil
@@ -181,13 +185,51 @@ func (s *FileStore) legacyPath(room string) string {
 	return filepath.Join(s.dir, legacyUnsafe.ReplaceAllString(room, "_")+".log")
 }
 
+// LoadLimits bounds the state accepted from disk. A zero field is unlimited,
+// except that a zero value for all fields retains the historical 16 MiB line
+// cap. Limits are enforced while replaying so a corrupt or tampered log cannot
+// force unbounded memory use before the room notices.
+type LoadLimits struct {
+	MaxEntries    int
+	MaxBytes      int64
+	MaxKeyBytes   int
+	MaxValueBytes int
+	MaxNodeBytes  int
+}
+
+func (l LoadLimits) maxLineBytes() int {
+	const fallback = 16 * 1024 * 1024
+	if l.MaxKeyBytes <= 0 && l.MaxValueBytes <= 0 && l.MaxNodeBytes <= 0 {
+		return fallback
+	}
+	// JSON string escaping can expand a raw byte to six bytes.
+	n := 6*(l.MaxKeyBytes+l.MaxValueBytes+l.MaxNodeBytes) + 64*1024
+	if n < 64*1024 {
+		n = 64 * 1024
+	}
+	if n > fallback {
+		return fallback
+	}
+	return n
+}
+
 // Load replays the op-log through a fresh CRDT and returns its snapshot. A torn
 // final line (from a crash mid-write) is skipped rather than failing the load.
 func (s *FileStore) Load(room string) (map[string]crdt.Register, error) {
+	return s.LoadWithLimits(room, LoadLimits{})
+}
+
+// LoadWithLimits is Load with explicit bounds on the accepted document. A state
+// that exceeds the configured room budget is rejected instead of being adopted
+// and immediately compacted over the original log.
+func (s *FileStore) LoadWithLimits(room string, limits LoadLimits) (map[string]crdt.Register, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadWithLimitsLocked(room, limits)
+}
 
-	snap, found, err := s.loadPath(s.path(room))
+func (s *FileStore) loadWithLimitsLocked(room string, limits LoadLimits) (map[string]crdt.Register, error) {
+	snap, found, err := s.loadPath(s.path(room), limits)
 	if err != nil || found {
 		if err == nil && found {
 			s.rememberSize(room)
@@ -195,28 +237,45 @@ func (s *FileStore) Load(room string) (map[string]crdt.Register, error) {
 		return snap, err
 	}
 
-	// One-way migration from the two earlier layouts. The base64 name was
-	// injective but could exceed NAME_MAX; the legacy sanitised name was not
-	// injective. Compact into the hashed layout before returning so future
-	// writes never touch the old file.
-	for _, alt := range []string{s.base64Path(room), s.legacyPath(room)} {
-		if alt == s.path(room) {
-			continue
+	// One-way migration from the base64 layout. That filename was injective,
+	// so it is safe to import automatically.
+	if alt := s.base64Path(room); alt != s.path(room) {
+		if _, statErr := os.Stat(alt); statErr == nil {
+			snap, found, err = s.loadPath(alt, limits)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				if err := s.compactLocked(room, snap); err != nil {
+					return nil, err
+				}
+				return snap, nil
+			}
 		}
-		if _, statErr := os.Stat(alt); statErr != nil {
-			continue
+	}
+
+	// The v1 sanitized layout was not injective ("a/b" and "a_b" both became
+	// "a_b.log"). Importing it automatically can silently attach one room's
+	// history to another, so it is opt-in and still rejected for unsafe ids.
+	if alt := s.legacyPath(room); alt != s.path(room) {
+		if _, statErr := os.Stat(alt); statErr == nil {
+			if legacyUnsafe.MatchString(room) {
+				return nil, fmt.Errorf("legacy room file %s cannot be safely attributed to room %q; re-import it manually", alt, room)
+			}
+			if !s.migrateLegacyV1 {
+				return nil, fmt.Errorf("legacy room file %s requires -migrate-legacy-v1 (SYNCWELL_MIGRATE_LEGACY_V1) after verifying that the id is unambiguous", alt)
+			}
+			snap, found, err = s.loadPath(alt, limits)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				if err := s.compactLocked(room, snap); err != nil {
+					return nil, err
+				}
+				return snap, nil
+			}
 		}
-		snap, found, err = s.loadPath(alt)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			continue
-		}
-		if err := s.compactLocked(room, snap); err != nil {
-			return nil, err
-		}
-		return snap, nil
 	}
 	return map[string]crdt.Register{}, nil
 }
@@ -227,7 +286,7 @@ func (s *FileStore) rememberSize(room string) {
 	}
 }
 
-func (s *FileStore) loadPath(path string) (map[string]crdt.Register, bool, error) {
+func (s *FileStore) loadPath(path string, limits LoadLimits) (map[string]crdt.Register, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -239,7 +298,7 @@ func (s *FileStore) loadPath(path string) (map[string]crdt.Register, bool, error
 
 	doc := crdt.NewLWWMap()
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), limits.maxLineBytes())
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -255,12 +314,39 @@ func (s *FileStore) loadPath(path string) (map[string]crdt.Register, bool, error
 			}
 			break
 		}
+		if err := validateLoadedRecord(rec, limits); err != nil {
+			return nil, true, fmt.Errorf("op-log %s: %w", path, err)
+		}
 		doc.ApplyRegister(rec.Key, rec.Reg)
+		if entries, bytes := doc.Size(); (limits.MaxEntries > 0 && entries > limits.MaxEntries) ||
+			(limits.MaxBytes > 0 && bytes > limits.MaxBytes) {
+			return nil, true, fmt.Errorf("op-log %s exceeds the configured room limits (%d registers, %d bytes)", path, entries, bytes)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, true, err
 	}
 	return doc.Snapshot(), true, nil
+}
+
+func validateLoadedRecord(rec Record, limits LoadLimits) error {
+	if rec.Key == "" || (limits.MaxKeyBytes > 0 && len(rec.Key) > limits.MaxKeyBytes) {
+		return errors.New("invalid key in persisted record")
+	}
+	if rec.Reg.TS.Node == "" || (limits.MaxNodeBytes > 0 && len(rec.Reg.TS.Node) > limits.MaxNodeBytes) {
+		return errors.New("invalid node id in persisted record")
+	}
+	if rec.Reg.Deleted {
+		if len(rec.Reg.Value) > 0 {
+			return errors.New("tombstone carries a value")
+		}
+		return nil
+	}
+	if len(rec.Reg.Value) == 0 || !json.Valid(rec.Reg.Value) ||
+		(limits.MaxValueBytes > 0 && len(rec.Reg.Value) > limits.MaxValueBytes) {
+		return errors.New("invalid value in persisted record")
+	}
+	return nil
 }
 
 func (s *FileStore) writer(room string) (*bufio.Writer, error) {

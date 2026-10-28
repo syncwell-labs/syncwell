@@ -88,8 +88,9 @@ func (l *tokenLimiter) blocked(ip string) (time.Duration, bool) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if s := l.blockedLocked(ip, l.now()); s != nil {
-		return s.blockedUntil.Sub(l.now()), true
+	now := l.now()
+	if s := l.blockedLocked(ip, now); s != nil {
+		return s.blockedUntil.Sub(now), true
 	}
 	return 0, false
 }
@@ -146,14 +147,28 @@ func (l *tokenLimiter) stateLocked(ip string, now time.Time) *ipState {
 	return st
 }
 
+const (
+	limiterPruneThreshold = 4096
+	limiterMaxStates      = 16384
+)
+
 func (l *tokenLimiter) maybePruneLocked(now time.Time) {
-	if len(l.states) < 4096 {
+	if len(l.states) < limiterPruneThreshold {
 		return
 	}
 	cutoff := now.Add(-10 * time.Minute)
 	for ip, st := range l.states {
-		if st.last.Before(cutoff) && st.blockedUntil.Before(now) {
+		if st.last.Before(cutoff) && !st.blockedUntil.After(now) {
 			delete(l.states, ip)
+		}
+	}
+	// Under a spoofed-IP flood, expired entries may still be too numerous.
+	// Bound the map hard; map iteration order is randomized, so this evicts
+	// arbitrary (including new) entries rather than growing without limit.
+	for len(l.states) >= limiterMaxStates {
+		for ip := range l.states {
+			delete(l.states, ip)
+			break
 		}
 	}
 }

@@ -20,6 +20,11 @@ services:
       # admin token set so /stats and /metrics stay protected.
       - key: SYNCWELL_INSECURE
         value: "1"
+      # The demo is a browser app embedded in the Render URL and is deliberately
+      # open. This marks cross-origin access as an explicit choice; production
+      # deployments must set SYNCWELL_ORIGINS and leave this unset.
+      - key: SYNCWELL_ALLOW_ANY_ORIGIN
+        value: "1"
       - key: SYNCWELL_ADMIN_TOKEN
         generateValue: true
       - key: SYNCWELL_MAX_ROOMS

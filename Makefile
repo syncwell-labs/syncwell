@@ -5,7 +5,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X syncwell/internal/version.Version=$(VERSION) -X syncwell/internal/version.Commit=$(COMMIT) -X syncwell/internal/version.Date=$(BUILD_DATE)
 
-.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e a11y e2e persist restore-drill gc chaos bench vet fmt fmt-check clean docker container-smoke test-multi-client test-python help
+.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e browser-e2e-chromium browser-e2e-firefox a11y e2e persist restore-drill gc chaos bench vet fmt fmt-check clean docker container-smoke test-multi-client test-python help
 
 help:
 	@echo "Syncwell make targets:"
@@ -26,6 +26,8 @@ help:
 	@echo "  bench            latency/throughput benchmark"
 	@echo "  loadtest-bin     build cmd/loadtest into bin/"
 	@echo "  browser-e2e      firefox + geckodriver demo walk"
+	@echo "  browser-e2e-chromium  Brave/Chromium websocket auth + collab + reconnect"
+	@echo "  browser-e2e-firefox   Firefox WebDriver BiDi auth + collab + reconnect"
 	@echo "  a11y             axe-core WCAG scan: demos + built docs (chromedriver)"
 	@echo "  docs-build       VitePress production build"
 	@echo "  docker           container image build"
@@ -82,6 +84,14 @@ docs-dev: docs-install
 # Browser E2E / accessibility smoke for the kanban demo.
 browser-e2e:
 	node tests/e2e/browser_kanban_e2e.mjs
+
+# Chromium/Brave E2E: websocket auth, collaboration, reconnect, console/network.
+browser-e2e-chromium:
+	node --test tests/e2e/browser_chromium_e2e.mjs
+
+# Firefox E2E through WebDriver BiDi: auth, collaboration, reconnect, logs.
+browser-e2e-firefox: build
+	node --test tests/e2e/browser_firefox_e2e.mjs
 
 # axe-core WCAG 2.1 A/AA scan over the demo surfaces and the built docs site.
 a11y: build docs-build

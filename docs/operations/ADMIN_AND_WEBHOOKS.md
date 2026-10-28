@@ -66,6 +66,14 @@ Environment equivalents are `SYNCWELL_WEBHOOK_URLS` (comma-separated),
 `SYNCWELL_WEBHOOK_SECRET`, `SYNCWELL_WEBHOOK_TIMEOUT`, and
 `SYNCWELL_WEBHOOK_QUEUE`.
 
+Destinations must be public `https` URLs. The server rejects private, loopback,
+link-local, carrier-grade NAT, documentation, and cloud-metadata addresses at
+startup and re-checks every resolved address at connect time (closing the DNS
+rebinding window). Redirects are limited and re-validated; HTTPS-to-HTTP
+downgrades are refused. For a trusted receiver on a private network or for
+local development, opt in with `-webhook-allow-private` /
+`SYNCWELL_WEBHOOK_ALLOW_PRIVATE` and accept the SSRF risk.
+
 Payload:
 
 ```json

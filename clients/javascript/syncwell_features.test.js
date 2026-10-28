@@ -146,3 +146,31 @@ test("storage persists the dirty key set for delta resume", async () => {
   assert.deepEqual(saved.dirty, ["offline"]);
   first.close();
 });
+
+test("remote overwrite prunes a stale dirty key before reconnect", () => {
+  const sw = new Syncwell("ws://localhost/ws", "room", { WebSocket: FakeWebSocket, clientId: "A" });
+  sw.connect();
+  sw._recv({ type: "snapshot", state: {}, epoch: 1 });
+  sw.set("k", "local");
+  assert.equal(sw._dirty.has("k"), true);
+
+  sw._recv({
+    type: "op",
+    epoch: 1,
+    key: "k",
+    register: { v: "remote", t: { c: 2, n: "B" } },
+  });
+  assert.equal(sw.get("k"), "remote");
+  assert.equal(sw._dirty.has("k"), false);
+
+  sw.set("j", "newer-local");
+  sw._recv({
+    type: "op",
+    epoch: 1,
+    key: "j",
+    register: { v: "older-remote", t: { c: 0, n: "B" } },
+  });
+  assert.equal(sw.get("j"), "newer-local");
+  assert.equal(sw._dirty.has("j"), true);
+  sw.close();
+});

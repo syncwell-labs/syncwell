@@ -24,19 +24,20 @@ any node, and events replicate across peers.
 ```bash
 syncwell -node-id node-a -admin-token "$ADMIN" \
   -node-peers node-b \
-  -cluster-peers http://node-b:8080 \
+  -cluster-peers https://node-b:8443 \
   -cluster-allowlist 10.0.0.0/8
 
 syncwell -node-id node-b -admin-token "$ADMIN" \
   -node-peers node-a \
-  -cluster-peers http://node-a:8080 \
+  -cluster-peers https://node-a:8443 \
   -cluster-allowlist 10.0.0.0/8
 ```
 
 `-node-peers` is the placement view (node IDs); `-cluster-peers` is the actual
 relay URL list. `-node-id` is required when `-cluster-peers` is set and must be
 unique. `-admin-token` is required when `-secret` is set: peers authenticate
-relay requests with it.
+relay requests with it. Peer URLs must use `https`; pass `-cluster-insecure`
+only for a trusted private network without TLS.
 
 ## Guarantees and limits
 

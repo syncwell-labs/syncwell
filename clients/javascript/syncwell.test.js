@@ -9,8 +9,9 @@ class FakeWebSocket {
   static last = null;
   static instances = [];
 
-  constructor(url) {
+  constructor(url, protocols) {
     this.url = url;
+    this.protocols = protocols;
     this.readyState = FakeWebSocket.OPEN;
     this.sent = [];
     FakeWebSocket.last = this;
@@ -51,6 +52,21 @@ test("constructor appends room and token without breaking existing query params"
   assert.equal(url.searchParams.get("debug"), "1");
   assert.equal(url.searchParams.get("room"), "team/a");
   assert.equal(url.searchParams.get("token"), "exp.sig");
+  sw.close();
+});
+
+test("subprotocol transport keeps the token out of the URL", () => {
+  const sw = new Syncwell("ws://localhost:8080/ws", "team/a", {
+    token: "exp.sig",
+    tokenTransport: "subprotocol",
+    WebSocket: FakeWebSocket,
+  });
+
+  sw.connect();
+
+  const url = new URL(FakeWebSocket.last.url);
+  assert.equal(url.searchParams.get("token"), null);
+  assert.deepEqual(FakeWebSocket.last.protocols, ["syncwell", "syncwell.token.exp.sig"]);
   sw.close();
 });
 

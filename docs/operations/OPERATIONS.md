@@ -18,7 +18,9 @@ the controls below.
   **public** bind (loud `INSECURE MODE` warning) — throwaway demos only; on
   loopback nothing is generated, so the flag is a no-op.
 - Set `-origins https://app.example` so browser WebSocket upgrades are accepted
-  only from the expected application origin.
+  only from the expected application origin. Public non-`-insecure` binds
+  enforce this automatically; `-allow-any-origin` is the explicit unsafe
+  override for non-browser clients.
 - Keep `/healthz` public for liveness probes and use `/readyz` for readiness;
   `/readyz` returns `503` while the process is shutting down.
 - Protect `/stats` and `/metrics` with `-admin-token` or
@@ -101,10 +103,11 @@ The server verifies RS*/PS*/ES* signatures against the provider JWKS
 `-oidc-refresh` (default 15m) and on unknown key IDs. `alg=none` is rejected.
 
 Put the room in `syncwell_room` (or `*`) and capabilities in `syncwell_caps`
-(`read`, `write`, `presence`, `admin`). Missing caps default to
-`read,write,presence`; `admin` must be explicit. JWTs use the same `?token=`
-WebSocket parameter as room tokens and `Authorization: Bearer` on admin
-endpoints. If the IdP is unreachable at startup the server still starts but
+(`read`, `write`, `presence`, `admin`). A missing or empty caps claim is a
+deny (fail closed); `admin` must be explicit. JWTs use the same WebSocket token
+carriers as room tokens (`Authorization: Bearer`, the
+`Sec-WebSocket-Protocol: syncwell.token.<jwt>` subprotocol, or legacy
+`?token=`) and `Authorization: Bearer` on admin endpoints. If the IdP is unreachable at startup the server still starts but
 logs `oidc_jwks_unavailable` and fails closed until keys load. Clustering still
 uses the shared `-admin-token`.
 
@@ -220,12 +223,16 @@ others.
 ```bash
 # node a
 syncwell -node-id node-a -admin-token "$ADMIN" \
-  -cluster-peers http://node-b:8080 -node-peers node-b -data /var/lib/syncwell
+  -cluster-peers https://node-b:8443 -node-peers node-b -data /var/lib/syncwell
 
 # node b
 syncwell -node-id node-b -admin-token "$ADMIN" \
-  -cluster-peers http://node-a:8080 -node-peers node-a -data /var/lib/syncwell
+  -cluster-peers https://node-a:8443 -node-peers node-a -data /var/lib/syncwell
 ```
+
+Peer URLs must be `https` (loopback is exempt for development). On an isolated
+private network without TLS, pass `-cluster-insecure` and accept that peer admin
+tokens are sent in plaintext.
 
 - `-node-id` is **required** when `-cluster-peers` is set and must be unique.
   The default `"local"` is rejected in cluster mode so two nodes can never
@@ -233,7 +240,7 @@ syncwell -node-id node-b -admin-token "$ADMIN" \
 - `-node-peers` is the placement view (node ids only) used by the rendezvous
   planner; the owner is shown in `/stats` and logs, and is advisory in
   full-mesh mode.
-- `-admin-token` is required when `-secret` is set: peers authenticate their
+- `-admin-token` is always required in cluster mode: peers authenticate their
   event POSTs with it. Keep it identical on every node.
 - `-cluster-path` (default `/cluster/event`) is the ingest path.
 - `-anti-entropy 30s` (default when clustering) pushes each room's full state to
@@ -257,8 +264,9 @@ Cluster metrics on `/metrics`: `syncwell_cluster_events_ingested_total`,
 
 The server applies conservative default limits to every WebSocket connection:
 1 MiB raw frames, 256-byte room IDs, 512-byte document keys, 256-byte node IDs,
-256 KiB register values, 64 KiB presence payloads, 10,000 registers per merge,
-and 120 messages per client per second.
+256 KiB register values, 64 KiB presence payloads, 10,000 registers per merge
+frame, 100,000 registers and ~16 MiB per room, 4 MiB of queued outbound data per
+client, and 120 messages per client per second.
 
 Tune these for your workload with:
 
@@ -271,7 +279,10 @@ syncwell \
   -max-value-bytes 262144 \
   -max-presence-bytes 65536 \
   -max-state-entries 10000 \
-  -max-messages-per-second 120
+  -max-messages-per-second 120 \
+  -max-doc-entries 100000 \
+  -max-doc-bytes 16777216 \
+  -max-send-bytes 4194304
 ```
 
 ## Current limitations

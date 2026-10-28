@@ -32,10 +32,10 @@ function randomId() {
   }
 }
 
-function buildURL(baseURL, room, token, delta) {
+function buildURL(baseURL, room, token, delta, tokenInQuery = true) {
   const url = new URL(baseURL, "http://syncwell.local");
   url.searchParams.set("room", room);
-  if (token) url.searchParams.set("token", token);
+  if (token && tokenInQuery) url.searchParams.set("token", token);
   if (delta) url.searchParams.set("delta", "1");
   const out = url.toString();
   return baseURL.startsWith("/") ? out.replace("http://syncwell.local", "") : out;
@@ -78,7 +78,8 @@ export class Syncwell {
     this.baseURL = baseURL;
     this.room = room;
     this.token = opts.token;
-    this.url = buildURL(baseURL, room, opts.token, false);
+    this.tokenTransport = opts.tokenTransport === "subprotocol" ? "subprotocol" : "query";
+    this.url = buildURL(baseURL, room, opts.token, false, this.tokenTransport !== "subprotocol");
     this.clientId = opts.clientId || randomId();
     this.WS = opts.WebSocket || defaultWS();
     this.handlers = {};
@@ -156,8 +157,11 @@ export class Syncwell {
     this._closed = false;
     this._ready = false;
     this._delta = this._deltaEnabled && Object.keys(this._vector()).length > 0;
-    this.url = buildURL(this.baseURL, this.room, this.token, this._delta);
-    const ws = new this.WS(this.url);
+    this.url = buildURL(this.baseURL, this.room, this.token, this._delta, this.tokenTransport !== "subprotocol");
+    const protocols = this.tokenTransport === "subprotocol" && this.token
+      ? ["syncwell", "syncwell.token." + this.token]
+      : undefined;
+    const ws = protocols ? new this.WS(this.url, protocols) : new this.WS(this.url);
     this.ws = ws;
     this.ws.onopen = async () => {
       if (this.ws !== ws) return;
@@ -248,12 +252,19 @@ export class Syncwell {
     return out;
   }
   _dirtyState() {
+    this._pruneDirty();
     const out = {};
     for (const key of this._dirty) {
       const reg = this.doc.entries.get(key);
       if (reg) out[key] = reg;
     }
     return out;
+  }
+  _pruneDirty() {
+    for (const key of this._dirty) {
+      const reg = this.doc.entries.get(key);
+      if (!reg || reg.t?.n !== this.clientId) this._dirty.delete(key);
+    }
   }
   _sendHello() {
     const vector = this._vector();
@@ -356,11 +367,10 @@ export class Syncwell {
         this.epoch = Math.max(1, Number(msg.epoch) || this.epoch);
         for (const k of Object.keys(msg.state || {})) this.clock.observe(msg.state[k].t);
         this.doc.mergeState(msg.state || {});
+        if (!this._ready) this._dirty.clear();
+        else this._pruneDirty();
         this._saveLocal();
-        if (!this._ready) {
-          this._dirty.clear();
-          this._startReady();
-        }
+        if (!this._ready) this._startReady();
         this._changed();
         break;
       case "delta":
@@ -368,6 +378,7 @@ export class Syncwell {
         for (const k of Object.keys(msg.state || {})) this.clock.observe(msg.state[k].t);
         this.doc.mergeState(msg.state || {});
         this._clearAcknowledgedDirty();
+        this._pruneDirty();
         this._saveLocal();
         this._startReady();
         this._changed();
@@ -380,6 +391,7 @@ export class Syncwell {
         }
         this.clock.observe(msg.register?.t);
         this.doc.mergeRegister(msg.key, msg.register);
+        this._pruneDirty();
         this._saveLocal();
         this._changed();
         break;

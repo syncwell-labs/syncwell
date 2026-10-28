@@ -39,13 +39,13 @@ var flagGroups = []struct {
 	title string
 	names []string
 }{
-	{"Core / server", []string{"addr", "data", "origins", "insecure", "static", "sdk", "version"}},
+	{"Core / server", []string{"addr", "data", "origins", "require-origins", "allow-any-origin", "insecure", "require-auth", "static", "sdk", "version"}},
 	{"Auth & room tokens", []string{"secret", "secret-previous", "admin-token", "revoked-jtis", "oidc-issuer", "oidc-audience", "oidc-jwks", "oidc-room-claim", "oidc-caps-claim", "oidc-refresh"}},
 	{"Rate limits & network trust", []string{"admin-rate", "admin-burst", "admin-max-failures", "admin-lockout", "admin-allowlist", "ws-rate", "cluster-rate", "cluster-allowlist", "trust-proxy", "proxy-hops"}},
-	{"Capacity limits", []string{"max-clients", "max-rooms", "idle-room-ttl", "max-message-bytes", "max-room-id-bytes", "max-key-bytes", "max-node-bytes", "max-value-bytes", "max-presence-bytes", "max-state-entries", "max-messages-per-second", "compact"}},
-	{"Durability & backup", []string{"fsync", "fsync-interval", "max-log-bytes", "backup", "restore", "verify-backup"}},
-	{"Clustering", []string{"node-id", "node-peers", "cluster-peers", "cluster-path", "anti-entropy"}},
-	{"Webhooks & tracing", []string{"webhook-urls", "webhook-secret", "webhook-timeout", "webhook-queue", "otel-endpoint", "otel-insecure", "otel-headers", "otel-sample-rate", "otel-service-name"}},
+	{"Capacity limits", []string{"max-clients", "max-rooms", "idle-room-ttl", "max-message-bytes", "max-room-id-bytes", "max-key-bytes", "max-node-bytes", "max-value-bytes", "max-presence-bytes", "max-state-entries", "max-messages-per-second", "max-doc-entries", "max-doc-bytes", "max-send-bytes", "compact"}},
+	{"Durability & backup", []string{"fsync", "fsync-interval", "max-log-bytes", "migrate-legacy-v1", "backup", "restore", "verify-backup"}},
+	{"Clustering", []string{"node-id", "node-peers", "cluster-peers", "cluster-path", "cluster-insecure", "anti-entropy"}},
+	{"Webhooks & tracing", []string{"webhook-urls", "webhook-secret", "webhook-timeout", "webhook-queue", "webhook-allow-private", "otel-endpoint", "otel-insecure", "otel-headers", "otel-sample-rate", "otel-service-name"}},
 	{"Token minting (prints a token and exits)", []string{"mint", "mint-sub", "mint-caps", "mint-jti", "mint-iat", "mint-nbf", "ttl"}},
 }
 
@@ -139,6 +139,7 @@ func main() {
 	fsyncMode := flag.String("fsync", envOr("SYNCWELL_FSYNC", "batch"), "durability: os (fastest), batch (default), every (power-loss safe)")
 	fsyncInterval := flag.Duration("fsync-interval", envDuration("SYNCWELL_FSYNC_INTERVAL", 5*time.Millisecond), "batch fsync interval")
 	maxLogBytes := flag.Int64("max-log-bytes", envInt64("SYNCWELL_MAX_LOG_BYTES", 64<<20), "compact a room log once it reaches this many bytes (0 = unlimited)")
+	migrateLegacyV1 := flag.Bool("migrate-legacy-v1", envBool("SYNCWELL_MIGRATE_LEGACY_V1", false), "import the ambiguous v1 sanitized room-file layout after verifying it is safe")
 	backupDir := flag.String("backup", "", "copy -data into this directory with a checksummed manifest and exit")
 	restoreDir := flag.String("restore", "", "verify this backup directory and restore it into -data, then exit")
 	verifyBackupDir := flag.String("verify-backup", "", "verify a backup directory and exit")
@@ -158,7 +159,10 @@ func main() {
 	otelSample := flag.Float64("otel-sample-rate", envFloat("SYNCWELL_OTEL_SAMPLE_RATE", 0.1), "fraction of traces to sample (0..1)")
 	otelService := flag.String("otel-service-name", envOr("SYNCWELL_OTEL_SERVICE_NAME", "syncwell"), "service.name resource attribute")
 	insecure := flag.Bool("insecure", envBool("SYNCWELL_INSECURE", false), "allow a public bind without generating credentials (loudly unsafe)")
-	origins := flag.String("origins", envOr("SYNCWELL_ORIGINS", ""), "comma-separated allowed Origins (empty = allow any)")
+	requireAuth := flag.Bool("require-auth", envBool("SYNCWELL_REQUIRE_AUTH", false), "refuse to start without room auth (-secret/SYNCWELL_SECRET or OIDC)")
+	origins := flag.String("origins", envOr("SYNCWELL_ORIGINS", ""), "comma-separated allowed Origins (scheme://host, exact match)")
+	requireOrigins := flag.Bool("require-origins", envBool("SYNCWELL_REQUIRE_ORIGINS", false), "reject websocket upgrades without a configured, matching Origin (implied on public non-insecure binds)")
+	allowAnyOrigin := flag.Bool("allow-any-origin", envBool("SYNCWELL_ALLOW_ANY_ORIGIN", false), "explicitly allow any browser Origin (unsafe for cookie-based auth; non-browser clients usually omit Origin)")
 	adminRate := flag.Int("admin-rate", envInt("SYNCWELL_ADMIN_RATE", 0), "max admin requests/min per IP (0 = default 120, negative = unlimited)")
 	wsRate := flag.Int("ws-rate", envInt("SYNCWELL_WS_RATE", 0), "max websocket upgrade attempts/min per IP (0 = default 300, negative = unlimited)")
 	adminBurst := flag.Int("admin-burst", envInt("SYNCWELL_ADMIN_BURST", 0), "admin burst per IP (0 = default 30)")
@@ -169,8 +173,8 @@ func main() {
 	clusterAllowlist := flag.String("cluster-allowlist", envOr("SYNCWELL_CLUSTER_ALLOWLIST", ""), "comma-separated CIDRs allowed to reach /cluster/event (empty = any)")
 	trustProxy := flag.Bool("trust-proxy", envBool("SYNCWELL_TRUST_PROXY", false), "use X-Forwarded-For for rate limits (only behind a trusted proxy)")
 	proxyHops := flag.Int("proxy-hops", envInt("SYNCWELL_PROXY_HOPS", 1), "number of trusted proxies in front of us; X-Forwarded-For is parsed right-to-left by this count")
-	maxClients := flag.Int("max-clients", envInt("SYNCWELL_MAX_CLIENTS", 256), "max clients per room (0 = unlimited, negative = default 256)")
-	maxRooms := flag.Int("max-rooms", envInt("SYNCWELL_MAX_ROOMS", 10000), "max live rooms before new rooms are refused (0 = unlimited, negative = default 10000)")
+	maxClients := flag.Int("max-clients", envInt("SYNCWELL_MAX_CLIENTS", server.DefaultMaxClients), "max clients per room (0 = unlimited, negative = default 256)")
+	maxRooms := flag.Int("max-rooms", envInt("SYNCWELL_MAX_ROOMS", server.DefaultMaxRooms), "max live rooms before new rooms are refused (0 = unlimited, negative = default 10000)")
 	idleRoomTTL := flag.Duration("idle-room-ttl", envDuration("SYNCWELL_IDLE_ROOM_TTL", 0), "evict empty rooms after this idle period (0 = default 60s, negative = disabled)")
 	maxMessageBytes := flag.Int("max-message-bytes", envInt("SYNCWELL_MAX_MESSAGE_BYTES", 0), "max websocket message bytes (0 = default)")
 	maxRoomIDBytes := flag.Int("max-room-id-bytes", envInt("SYNCWELL_MAX_ROOM_ID_BYTES", 0), "max room id bytes (0 = default)")
@@ -180,15 +184,20 @@ func main() {
 	maxPresenceBytes := flag.Int("max-presence-bytes", envInt("SYNCWELL_MAX_PRESENCE_BYTES", 0), "max presence JSON bytes (0 = default)")
 	maxStateEntries := flag.Int("max-state-entries", envInt("SYNCWELL_MAX_STATE_ENTRIES", 0), "max registers accepted in one merge frame (0 = default)")
 	maxMessagesPerSecond := flag.Int("max-messages-per-second", envInt("SYNCWELL_MAX_MESSAGES_PER_SECOND", 0), "max websocket messages per client per second (0 = default)")
+	maxDocEntries := flag.Int("max-doc-entries", envInt("SYNCWELL_MAX_DOC_ENTRIES", 0), "max registers (including tombstones) per room (0 = default 100000)")
+	maxDocBytes := flag.Int64("max-doc-bytes", envInt64("SYNCWELL_MAX_DOC_BYTES", 0), "approx max in-memory document bytes per room (0 = default 16 MiB)")
+	maxSendBytes := flag.Int64("max-send-bytes", envInt64("SYNCWELL_MAX_SEND_BYTES", 0), "max queued outbound bytes per client (0 = default 4 MiB)")
 	nodeID := flag.String("node-id", envOr("SYNCWELL_NODE_ID", ""), "unique node id (required when clustering)")
 	nodePeers := flag.String("node-peers", envOr("SYNCWELL_NODE_PEERS", ""), "comma-separated peer node ids for room placement")
 	clusterPeers := flag.String("cluster-peers", envOr("SYNCWELL_CLUSTER_PEERS", ""), "comma-separated peer cluster event URLs (empty = single node)")
 	clusterPath := flag.String("cluster-path", envOr("SYNCWELL_CLUSTER_PATH", "/cluster/event"), "HTTP path for cluster event posts")
+	clusterInsecure := flag.Bool("cluster-insecure", envBool("SYNCWELL_CLUSTER_INSECURE", false), "allow plaintext http cluster peers on a trusted private network (admin tokens cross the wire)")
 	antiEntropy := flag.Duration("anti-entropy", envDuration("SYNCWELL_ANTI_ENTROPY", 30*time.Second), "how often to push full room state to peers (0 = disabled)")
 	webhookURLs := flag.String("webhook-urls", envOr("SYNCWELL_WEBHOOK_URLS", ""), "comma-separated HTTP endpoints for room milestone webhooks")
 	webhookSecret := flag.String("webhook-secret", envOr("SYNCWELL_WEBHOOK_SECRET", ""), "HMAC-SHA256 secret used to sign webhook bodies")
 	webhookTimeout := flag.Duration("webhook-timeout", envDuration("SYNCWELL_WEBHOOK_TIMEOUT", 5*time.Second), "webhook delivery timeout")
 	webhookQueue := flag.Int("webhook-queue", envInt("SYNCWELL_WEBHOOK_QUEUE", 0), "webhook queue size (0 = default 256)")
+	webhookAllowPrivate := flag.Bool("webhook-allow-private", envBool("SYNCWELL_WEBHOOK_ALLOW_PRIVATE", false), "allow webhook destinations in private/loopback ranges (SSRF risk; trusted local receivers only)")
 	tlsCert := flag.String("tls-cert", envOr("SYNCWELL_TLS_CERT", ""), "TLS certificate file (requires -tls-key)")
 	tlsKey := flag.String("tls-key", envOr("SYNCWELL_TLS_KEY", ""), "TLS private key file (requires -tls-cert)")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -223,7 +232,11 @@ func main() {
 		if nbf == 0 {
 			nbf = iat
 		}
-		fmt.Println(server.SignAccessTokenForSubject(*secret, *mint, *mintSub, time.Now().Add(*ttl).Unix(), strings.Split(*mintCaps, ","), *mintJTI, iat, nbf))
+		caps, err := server.ValidateCapsList(strings.Split(*mintCaps, ","))
+		if err != nil {
+			log.Fatalf("-mint-caps: %v", err)
+		}
+		fmt.Println(server.SignAccessTokenForSubject(*secret, *mint, *mintSub, time.Now().Add(*ttl).Unix(), caps, *mintJTI, iat, nbf))
 		return
 	}
 
@@ -341,7 +354,7 @@ func main() {
 
 	var st store.Store
 	if *data != "" {
-		fs, err := store.OpenWithOptions(*data, store.Options{Fsync: mode, SyncInterval: *fsyncInterval})
+		fs, err := store.OpenWithOptions(*data, store.Options{Fsync: mode, SyncInterval: *fsyncInterval, MigrateLegacyV1: *migrateLegacyV1})
 		if err != nil {
 			log.Fatalf("open data dir %q: %v", *data, err)
 		}
@@ -352,6 +365,13 @@ func main() {
 	var allowedOrigins []string
 	if *origins != "" {
 		allowedOrigins = strings.Split(*origins, ",")
+	}
+	requireOriginPolicy := *requireOrigins
+	if publicBind(*addr) && !*insecure && !*allowAnyOrigin && len(allowedOrigins) == 0 {
+		// Public binds must opt in to cross-origin browser access explicitly.
+		// This prevents the historical "any website can open a socket" default
+		// from leaking into production when an operator forgets -origins.
+		requireOriginPolicy = true
 	}
 	var clusterPeerList []string
 	if *clusterPeers != "" {
@@ -378,6 +398,8 @@ func main() {
 		AdminToken:           *adminToken,
 		RevokedJTIs:          revoked,
 		Origins:              allowedOrigins,
+		RequireOrigins:       requireOriginPolicy,
+		AllowAnyOrigin:       *allowAnyOrigin,
 		AdminRatePerMinute:   *adminRate,
 		WSRatePerMinute:      *wsRate,
 		AdminBurst:           *adminBurst,
@@ -396,11 +418,13 @@ func main() {
 		Peers:                nodePeerList,
 		ClusterPeers:         clusterPeerList,
 		ClusterPath:          *clusterPath,
+		ClusterAllowHTTP:     *clusterInsecure,
 		AntiEntropyInterval:  *antiEntropy,
 		WebhookURLs:          splitList(*webhookURLs),
 		WebhookSecret:        *webhookSecret,
 		WebhookTimeout:       *webhookTimeout,
 		WebhookQueue:         *webhookQueue,
+		WebhookAllowPrivate:  *webhookAllowPrivate,
 		Limits: server.Limits{
 			MaxMessageBytes:      *maxMessageBytes,
 			MaxRoomIDBytes:       *maxRoomIDBytes,
@@ -410,6 +434,9 @@ func main() {
 			MaxPresenceBytes:     *maxPresenceBytes,
 			MaxStateEntries:      *maxStateEntries,
 			MaxMessagesPerSecond: *maxMessagesPerSecond,
+			MaxDocEntries:        *maxDocEntries,
+			MaxDocBytes:          *maxDocBytes,
+			MaxSendBytes:         *maxSendBytes,
 		},
 	}
 	var oidcVerifier *server.OIDCVerifier
@@ -433,6 +460,9 @@ func main() {
 		log.Fatal("-oidc-audience/-oidc-jwks require -oidc-issuer (or SYNCWELL_OIDC_ISSUER)")
 	}
 	cfg.OIDC = oidcVerifier
+	if *requireAuth && *secret == "" && oidcVerifier == nil {
+		log.Fatal("-require-auth is set but no room authentication is configured; set -secret/SYNCWELL_SECRET or -oidc-issuer")
+	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
 	}
@@ -454,9 +484,9 @@ func main() {
 	mux.Handle("/stats", hub.AdminHandler(hub.ServeStats))
 	mux.Handle("/metrics", hub.AdminHandler(hub.ServeMetrics))
 	mux.Handle("/cluster/event", hub.ClusterHandler(hub.ServeClusterEvent))
-	mux.HandleFunc("/admin", hub.ServeAdminUI)
-	mux.Handle("/admin/api/rooms", hub.AdminHandler(hub.ServeAdminRooms))
-	mux.Handle("/admin/api/rooms/", hub.AdminHandler(hub.ServeAdminRoomAction))
+	mux.Handle("/admin", hub.AdminHandler(server.BodyLimit(hub.ServeAdminUI, 1<<20)))
+	mux.Handle("/admin/api/rooms", hub.AdminHandler(server.BodyLimit(hub.ServeAdminRooms, 1<<20)))
+	mux.Handle("/admin/api/rooms/", hub.AdminHandler(server.BodyLimit(hub.ServeAdminRoomAction, 1<<20)))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -511,9 +541,16 @@ func main() {
 		server.LogEvent("serving_demo", map[string]any{"dir": *static})
 	}
 
-	srv := &http.Server{Addr: *addr, Handler: server.TracingMiddleware(mux)}
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           server.TracingMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
 	if *tlsCert != "" {
-		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
 	}
 
 	// Graceful shutdown: drain connections and flush persistence on SIGINT/TERM.
