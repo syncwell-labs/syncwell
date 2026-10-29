@@ -183,19 +183,39 @@ events and on volume usage; writes resume automatically once space is available.
 **Backup and restore (no filesystem snapshot needed)**
 
 ```bash
-# Offline: flush + fsync every room, copy logs, write a checksummed manifest.
-syncwell -data /var/lib/syncwell -backup /backup/2026-10-20
+# Generate a dedicated age identity once; store the private file offline.
+age-keygen -o /etc/syncwell/backup-identity.txt
+# Save the printed age1... public recipient in the backup job configuration.
+
+# Offline encrypted backup. Repeat -backup-recipient during key rotation.
+syncwell -data /var/lib/syncwell -backup /backup/2026-10-20 \
+  -backup-recipient age1...
 
 # Verify sizes and SHA-256 checksums (safe on a live server's copy).
-syncwell -verify-backup /backup/2026-10-20
+syncwell -verify-backup /backup/2026-10-20 \
+  -restore-identity /etc/syncwell/backup-identity.txt
 
 # Restore into an empty or existing data directory (server must be stopped).
-syncwell -restore /backup/2026-10-20 -data /var/lib/syncwell
+syncwell -restore /backup/2026-10-20 -data /var/lib/syncwell \
+  -restore-identity /etc/syncwell/backup-identity.txt
 ```
 
-`-restore` verifies the manifest before copying anything and refuses a corrupted
-backup, so a bad backup cannot overwrite good data. `make restore-drill` runs the
-full backup → corruption-rejection → wipe → restore → serve loop in CI.
+`-restore` verifies the encrypted manifest and every file before replacing the
+data directory. Wrong identities, truncation, and tampering fail before live
+data is changed. Keep the private identity offline: losing it means losing
+access to those backups. Keep a second protected copy and rehearse key rotation
+by encrypting new backups to both old and new recipients, then verifying restore
+with the new identity before removing the old recipient. Legacy format-1
+plaintext backups remain verifiable/restorable. For one-time migration only,
+`-backup-plaintext` explicitly writes an unencrypted backup and prints a warning.
+`make restore-drill` runs the encrypted backup → corruption rejection → wipe →
+restore → serve loop.
+
+Room retention is disabled by default. Set `-retention 720h` to sweep rooms
+older than 30 days at startup and daily; both metadata creation time and log
+modification time must be older than the window, and rooms with connected
+clients are skipped. Start with `-retention-dry-run` and review
+`retention_would_purge` events before enabling deletion.
 
 Keep a copy of legacy pre-v2 room log files until operators have reviewed any
 room IDs that previously mapped to the same sanitized filename.
@@ -247,13 +267,15 @@ tokens are sent in plaintext.
   peers on an interval, healing events dropped by a full relay queue or a node
   restart. Set `0` to disable.
 
-**Topology and failover.** This is replication, not sharding: every node holds
+**Topology and failover.** In relay mode this is replication, not sharding: every node holds
 every room, so any surviving node can serve any room immediately. "Re-homing"
 after a node dies means pointing clients (or the load balancer/health check) at a
 surviving node — no state transfer is needed because it is already there. The
 tradeoff is memory proportional to `nodes × total rooms`; run 2–3 nodes for HA,
-not tens. Sharded ownership and an external bus (Redis/NATS) are future work;
-see [`COMPLETION_PLAN_2026-10-20.md`](../audits/COMPLETION_PLAN_2026-10-20.md) (2.3/2.5).
+not tens. An experimental Redis ownership mode is documented in
+[`website/self-hosting/clustering.md`](../../website/self-hosting/clustering.md)
+and [`ADR-001`](../adr/ADR-001-cluster-transport.md). It is not production-
+supported until provider failover fencing and three-node SIGKILL validation pass.
 
 Cluster metrics on `/metrics`: `syncwell_cluster_events_ingested_total`,
 `..._dropped_total`, `syncwell_cluster_relay_{posts,errors,dropped}_total`,

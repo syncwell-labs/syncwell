@@ -90,7 +90,8 @@ syncwell -addr :8443 -data /data \
   -tls-cert /etc/ssl/fullchain.pem -tls-key /etc/ssl/privkey.pem
 ```
 
-The server enforces TLS 1.2+ and serves HTTP/2. Renewal (Let's Encrypt) is left
+The server enforces TLS 1.3 by default and serves HTTP/2. Use `-tls-min=1.2`
+(`SYNCWELL_TLS_MIN=1.2`) only when legacy clients require TLS 1.2. Renewal (Let's Encrypt) is left
 to your proxy/ACME client; there is no built-in ACME account storage.
 
 ## Credential defaults
@@ -214,6 +215,7 @@ document keys, so only send them to a trusted collector.
 | `SYNCWELL_FSYNC_INTERVAL` | `-fsync-interval` | `5ms` |
 | `SYNCWELL_MAX_LOG_BYTES` | `-max-log-bytes` | `67108864` |
 | `SYNCWELL_MIGRATE_LEGACY_V1` | `-migrate-legacy-v1` | `false` (opt-in import of ambiguous v1 filenames) |
+| `SYNCWELL_MAX_CONNS` | `-max-conns` | `4096` concurrent WebSockets per process (`0` = unlimited) |
 | `SYNCWELL_MAX_CLIENTS` | `-max-clients` | `256` (0 = unlimited) |
 | `SYNCWELL_MAX_ROOMS` | `-max-rooms` | `10000` (0 = unlimited; negative = default) |
 | `SYNCWELL_MAX_DOC_ENTRIES` | `-max-doc-entries` | `100000` registers per room |
@@ -224,6 +226,9 @@ document keys, so only send them to a trusted collector.
 | `SYNCWELL_MAX_STATE_ENTRIES` | `-max-state-entries` | server default (per merge/hello frame) |
 | `SYNCWELL_MAX_ROOM_ID_BYTES` / `_KEY_BYTES` / `_NODE_BYTES` / `_VALUE_BYTES` / `_PRESENCE_BYTES` | `-max-*-bytes` | server defaults |
 | `SYNCWELL_IDLE_ROOM_TTL` | `-idle-room-ttl` | `60s` (negative disables) |
+| `SYNCWELL_RETENTION` | `-retention` | `0` (disabled; duration such as `720h`) |
+| `SYNCWELL_RETENTION_DRY_RUN` | `-retention-dry-run` | `false` |
+| `SYNCWELL_SHUTDOWN_TIMEOUT` | `-shutdown-timeout` | `30s` |
 | `SYNCWELL_COMPACT` | `-compact` | `256` |
 | `SYNCWELL_STATIC` / `SYNCWELL_SDK` | `-static` / `-sdk` | `examples/demos` / `clients/javascript` |
 | `SYNCWELL_NODE_ID` | `-node-id` | unset (single node) |
@@ -235,6 +240,7 @@ document keys, so only send them to a trusted collector.
 | `SYNCWELL_WS_RATE` | `-ws-rate` | 300 upgrades/min per IP |
 | `SYNCWELL_REVOKED_JTIS` | `-revoked-jtis` | none |
 | `SYNCWELL_TLS_CERT` / `SYNCWELL_TLS_KEY` | `-tls-cert` / `-tls-key` | plain HTTP |
+| `SYNCWELL_TLS_MIN` | `-tls-min` | `1.3` (`1.2` is an explicit compatibility opt-in) |
 | `SYNCWELL_INSECURE` | `-insecure` | `false` (public binds generate credentials) |
 
 ## Platform realities for realtime

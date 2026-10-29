@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +21,23 @@ import (
 
 	"syncwell/internal/version"
 )
+
+type requestIDContextKey struct{}
+
+var validRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
+
+func RequestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDContextKey{}).(string)
+	return id
+}
+
+func newRequestID() string {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "request-id-unavailable"
+	}
+	return hex.EncodeToString(bytes[:])
+}
 
 // TracingConfig configures the optional OTLP/HTTP trace exporter.
 type TracingConfig struct {
@@ -100,10 +120,19 @@ func normalizeOTLPEndpoint(endpoint string) string {
 // trace context from headers, and records the response status.
 func TracingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := r.Header.Get("X-Request-ID")
+		if !validRequestID.MatchString(requestID) {
+			requestID = newRequestID()
+		}
+		w.Header().Set("X-Request-ID", requestID)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, requestID))
 		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 		ctx, span := otel.Tracer("syncwell").Start(ctx, r.Method+" "+r.URL.Path,
 			trace.WithSpanKind(trace.SpanKindServer),
-			trace.WithAttributes(attribute.String("http.request.method", r.Method)),
+			trace.WithAttributes(
+				attribute.String("http.request.method", r.Method),
+				attribute.String("http.request_id", requestID),
+			),
 		)
 		defer span.End()
 

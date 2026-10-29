@@ -5,14 +5,14 @@ irreversible or credentialed steps. Never publish a URL or version before it
 serves traffic.
 
 The full canonical runbook is
-[`docs/product/LAUNCH.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/product/LAUNCH.md).
+[`docs/product/LAUNCH.md`](https://github.com/syncwell-labs/syncwell/blob/main/docs/product/LAUNCH.md).
 
 ## Order
 
 1. **Tag the release.** Push `vX.Y.Z` and `sdk-vX.Y.Z`; verify GitHub release
    archives, checksums, SBOMs, GHCR image attestations, and npm provenance.
 2. **Deploy the demo pinned to the tag.** Use
-   `ghcr.io/nil-vaghani/syncwell:vX.Y.Z` (or the digest), set
+   `ghcr.io/syncwell-labs/syncwell:v0.5.0` (or the verified digest), set
    `SYNCWELL_SECRET`, `SYNCWELL_ADMIN_TOKEN`, `SYNCWELL_DATA`, and
    `SYNCWELL_ORIGINS`. Do not deploy `latest`.
 3. **Verify.** `/healthz`, `/readyz`, admin `/stats`, a two-window edit, cursors,
@@ -36,4 +36,4 @@ The full canonical runbook is
 admin-protected. The demo smoke workflow skips until `DEMO_URL` exists.
 
 The owner-only board and release gates are in
-[`docs/product/MILESTONES.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/product/MILESTONES.md).
+[`docs/product/MILESTONES.md`](https://github.com/syncwell-labs/syncwell/blob/main/docs/product/MILESTONES.md).

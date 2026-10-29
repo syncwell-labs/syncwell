@@ -178,8 +178,8 @@ func TestBackupRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Files) != 1 {
-		t.Fatalf("manifest lists %d files, want 1", len(m.Files))
+	if len(m.Files) != 2 {
+		t.Fatalf("manifest lists %d files, want log and metadata", len(m.Files))
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)

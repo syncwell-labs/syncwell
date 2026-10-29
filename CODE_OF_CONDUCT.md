@@ -55,10 +55,9 @@ project in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported privately to the maintainer, [@Nil-Vaghani](https://github.com/Nil-Vaghani),
-via a direct message or by opening a private security advisory at
-https://github.com/Nil-Vaghani/syncwell/security/advisories/new. All complaints
-will be reviewed and investigated promptly and fairly.
+reported privately to the Syncwell maintainers by opening a private security
+advisory at https://github.com/syncwell-labs/syncwell/security/advisories/new.
+All complaints will be reviewed and investigated promptly and fairly.
 
 All maintainers are obligated to respect the privacy and security of the
 reporter of any incident.

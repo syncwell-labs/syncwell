@@ -24,6 +24,7 @@ the normal admin rate limit, failure lockout, and allow-list.
 | `/admin/api/rooms` | GET | Rooms on this node with clients, live keys, tombstones, GC low-water, owner |
 | `/admin/api/rooms/{room}/resnapshot` | POST | Force a snapshot broadcast (clients recover from a suspected divergence) |
 | `/admin/api/rooms/{room}/evict` | POST | Disconnect clients and remove the room from memory; persisted data is **not** deleted |
+| `/admin/api/rooms/{room}/purge` | POST | Disconnect clients and permanently delete the room's persisted log and metadata |
 
 Examples:
 
@@ -42,6 +43,32 @@ curl -X POST -H "Authorization: Bearer $SYNCWELL_ADMIN_TOKEN" \
 client that reconnects recreates the room from its durable log. If `/admin` is
 publicly reachable, also restrict it at the proxy or use `-admin-allowlist`;
 the token protects the data, not the UI shell.
+
+## Audit log
+
+Set `-audit-log /var/log/syncwell/audit.jsonl` (or `SYNCWELL_AUDIT_LOG`) to
+append privileged audit events to a mode-0600 file; events are also written to
+stderr. Syncwell appends and syncs each event before completing the action.
+Keep the file on a filesystem with space and access controls separate from
+room data. Admin-token authentication does not identify a person, so these
+events use `actor: "admin-token"`; OIDC admin tokens record the verified
+subject. CLI backup, verify, and restore events use `actor: "local-process"`
+because the CLI has no authenticated user identity.
+
+The process keeps the file open. Configure logrotate with `copytruncate` so
+rotation does not detach the open descriptor:
+
+```text
+/var/log/syncwell/audit.jsonl {
+    daily
+    rotate 30
+    compress
+    missingok
+    notifempty
+    create 0600 syncwell syncwell
+    copytruncate
+}
+```
 
 ## Webhooks
 

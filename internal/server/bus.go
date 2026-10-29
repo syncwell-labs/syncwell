@@ -3,9 +3,13 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,8 +131,10 @@ type HTTPClusterRelay struct {
 	dropped atomic.Uint64
 	errs    atomic.Uint64
 
-	mu     sync.RWMutex
-	peerUp map[string]bool
+	mu           sync.RWMutex
+	peerUp       map[string]bool
+	peerDuration map[string]*histogram
+	peerErrors   map[string]map[string]uint64
 }
 
 // NewHTTPClusterRelay returns a relay with sensible defaults. Publishing is
@@ -138,9 +144,7 @@ func NewHTTPClusterRelay(peers []string, path string, client *http.Client) *HTTP
 	if path == "" {
 		path = "/cluster/event"
 	}
-	if client == nil {
-		client = &http.Client{Timeout: 2 * time.Second}
-	}
+	client = newClusterHTTPClient(client)
 	out := make([]string, 0, len(peers))
 	seen := map[string]struct{}{}
 	for _, peer := range peers {
@@ -158,7 +162,33 @@ func NewHTTPClusterRelay(peers []string, path string, client *http.Client) *HTTP
 	for _, peer := range out {
 		up[peer] = false // unknown until the first delivery attempt
 	}
-	return &HTTPClusterRelay{Peers: out, Path: path, Client: client, sem: make(chan struct{}, 64), peerUp: up}
+	return &HTTPClusterRelay{Peers: out, Path: path, Client: client, sem: make(chan struct{}, 64), peerUp: up, peerDuration: map[string]*histogram{}, peerErrors: map[string]map[string]uint64{}}
+}
+
+func newClusterHTTPClient(base *http.Client) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if base != nil {
+		if supplied, ok := base.Transport.(*http.Transport); ok {
+			transport = supplied.Clone()
+		} else if base.Transport != nil {
+			transport = http.DefaultTransport.(*http.Transport).Clone()
+		}
+	}
+	transport.Proxy = nil
+	transport.DialContext = (&net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+		transport.TLSClientConfig.MinVersion = tls.VersionTLS12
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   2 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // Publish enqueues the event for asynchronous delivery. If the outbound queue is
@@ -205,61 +235,274 @@ func (r *HTTPClusterRelay) setPeerUp(peer string, up bool) {
 	r.mu.Unlock()
 }
 
+func (r *HTTPClusterRelay) recordPeer(peer, reason string, elapsed time.Duration, up bool) {
+	r.mu.Lock()
+	h := r.peerDuration[peer]
+	if h == nil {
+		h = newHistogram([]float64{.005, .01, .025, .05, .1, .25, .5, 1, 2})
+		r.peerDuration[peer] = h
+	}
+	if reason != "" {
+		if r.peerErrors[peer] == nil {
+			r.peerErrors[peer] = map[string]uint64{}
+		}
+		r.peerErrors[peer][reason]++
+	}
+	r.peerUp[peer] = up
+	r.mu.Unlock()
+	h.observe(elapsed.Seconds())
+}
+
+// WritePeerMetrics exports metrics with labels bounded by the configured peer list.
+func (r *HTTPClusterRelay) WritePeerMetrics(w io.Writer) {
+	r.mu.RLock()
+	durations := make(map[string]*histogram, len(r.peerDuration))
+	for peer, h := range r.peerDuration {
+		durations[peer] = h
+	}
+	errs := make(map[string]map[string]uint64, len(r.peerErrors))
+	for peer, reasons := range r.peerErrors {
+		copyReasons := map[string]uint64{}
+		for reason, n := range reasons {
+			copyReasons[reason] = n
+		}
+		errs[peer] = copyReasons
+	}
+	r.mu.RUnlock()
+	fmt.Fprintln(w, "# HELP syncwell_cluster_relay_duration_seconds Time spent delivering one event to a configured peer")
+	fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_duration_seconds histogram")
+	for peer, h := range durations {
+		h.writeSamplesWithLabel(w, "syncwell_cluster_relay_duration_seconds", "peer", peer)
+	}
+	fmt.Fprintln(w, "# HELP syncwell_cluster_relay_errors_total Failed relay attempts by configured peer and bounded reason")
+	fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_errors_total counter")
+	for peer, reasons := range errs {
+		for reason, n := range reasons {
+			fmt.Fprintf(w, "syncwell_cluster_relay_errors_total{peer=%q,reason=%q} %d\n", peer, reason, n)
+		}
+	}
+}
+
 func (r *HTTPClusterRelay) post(ev ClusterEvent) {
 	body, err := MarshalClusterEvent(ev)
 	if err != nil {
 		LogEvent("cluster_wire_marshal_error", map[string]any{"room": ev.Room, "error": err.Error()})
 		return
 	}
+	for _, peer := range r.Peers {
+		r.postToPeer(peer, ev, body)
+	}
+}
+
+func (r *HTTPClusterRelay) postToPeer(peer string, ev ClusterEvent, body []byte) {
 	client := r.Client
 	if client == nil {
 		client = &http.Client{Timeout: 2 * time.Second}
 	}
-	for _, peer := range r.Peers {
-		ctx, span := otel.Tracer("syncwell").Start(context.Background(), "cluster.post",
-			trace.WithSpanKind(trace.SpanKindClient),
-			trace.WithAttributes(
-				attribute.String("syncwell.peer", peer),
-				attribute.String("syncwell.room", ev.Room),
-				attribute.String("syncwell.kind", ev.Kind),
-			),
-		)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, peer+r.Path, bytes.NewReader(body))
-		if err != nil {
-			span.SetStatus(codes.Error, "request build failed")
-			span.End()
-			r.errs.Add(1)
-			r.setPeerUp(peer, false)
-			LogEvent("cluster_relay_request_error", map[string]any{"peer": peer, "room": ev.Room, "error": err.Error()})
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
-		if r.Token != "" {
-			req.Header.Set("Authorization", "Bearer "+r.Token)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			span.SetStatus(codes.Error, "post failed")
-			span.RecordError(err)
-			span.End()
-			r.errs.Add(1)
-			r.setPeerUp(peer, false)
-			LogEvent("cluster_relay_post_error", map[string]any{"peer": peer, "room": ev.Room, "error": err.Error()})
-			continue
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode >= 300 {
-			span.SetStatus(codes.Error, "peer returned "+resp.Status)
-			span.End()
-			r.errs.Add(1)
-			r.setPeerUp(peer, false)
-			LogEvent("cluster_relay_status_error", map[string]any{"peer": peer, "room": ev.Room, "status": resp.StatusCode})
-			continue
-		}
+	started := time.Now()
+	ctx, span := otel.Tracer("syncwell").Start(context.Background(), "cluster.post",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("syncwell.peer", peer),
+			attribute.String("syncwell.room", ev.Room),
+			attribute.String("syncwell.kind", ev.Kind),
+		),
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, peer+r.Path, bytes.NewReader(body))
+	if err != nil {
+		span.SetStatus(codes.Error, "request build failed")
 		span.End()
-		r.posted.Add(1)
-		r.setPeerUp(peer, true)
+		r.errs.Add(1)
+		r.recordPeer(peer, "request", time.Since(started), false)
+		LogEvent("cluster_relay_request_error", map[string]any{"peer": peer, "room": ev.Room, "error": err.Error()})
+		return
 	}
+	req.Header.Set("Content-Type", "application/json")
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	if r.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+r.Token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		span.SetStatus(codes.Error, "post failed")
+		span.RecordError(err)
+		span.End()
+		r.errs.Add(1)
+		r.recordPeer(peer, "transport", time.Since(started), false)
+		LogEvent("cluster_relay_post_error", map[string]any{"peer": peer, "room": ev.Room, "error": err.Error()})
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		span.SetStatus(codes.Error, "peer returned "+resp.Status)
+		span.End()
+		r.errs.Add(1)
+		r.recordPeer(peer, "status", time.Since(started), false)
+		LogEvent("cluster_relay_status_error", map[string]any{"peer": peer, "room": ev.Room, "status": resp.StatusCode})
+		return
+	}
+	span.End()
+	r.posted.Add(1)
+	r.recordPeer(peer, "", time.Since(started), true)
+}
+
+// AntiEntropy exchanges bounded pages of per-register digests and sends only
+// differing registers. A full snapshot is the bounded fallback.
+func (r *HTTPClusterRelay) AntiEntropy(ev ClusterEvent, digest string, apply func(ClusterEvent)) uint64 {
+	snapshotBody, err := MarshalClusterEvent(ev)
+	if err != nil {
+		return 0
+	}
+	var transferred uint64
+	for _, peer := range r.Peers {
+		cursor := ""
+		fallback := false
+		for pageNo := 0; pageNo < 4096; pageNo++ {
+			localPage := digestPage(ev.State, cursor)
+			requestBody, err := json.Marshal(clusterDigestRequest{Room: ev.Room, From: ev.From, Digest: digest, Cursor: cursor, Entries: digestEntries(localPage)})
+			if err != nil || len(requestBody) > 1<<20 {
+				fallback = true
+				break
+			}
+			started := time.Now()
+			req, err := http.NewRequest(http.MethodPost, peer+"/cluster/digest", bytes.NewReader(requestBody))
+			if err != nil {
+				r.errs.Add(1)
+				r.recordPeer(peer, "request", time.Since(started), false)
+				fallback = true
+				break
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if r.Token != "" {
+				req.Header.Set("Authorization", "Bearer "+r.Token)
+			}
+			client := r.Client
+			if client == nil {
+				client = &http.Client{Timeout: 2 * time.Second}
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				r.errs.Add(1)
+				r.recordPeer(peer, "digest_transport", time.Since(started), false)
+				break
+			}
+			responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+			_ = resp.Body.Close()
+			transferred += uint64(len(requestBody) + len(responseBody))
+			if readErr != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				r.errs.Add(1)
+				r.recordPeer(peer, "digest_status", time.Since(started), false)
+				break
+			}
+			var reply clusterDigestResponse
+			if err := json.Unmarshal(responseBody, &reply); err != nil || len(responseBody) > 1<<20 {
+				r.errs.Add(1)
+				r.recordPeer(peer, "digest_response", time.Since(started), false)
+				fallback = true
+				break
+			}
+			r.recordPeer(peer, "", time.Since(started), true)
+			if reply.TooLarge {
+				fallback = true
+				break
+			}
+			remoteDelta := ClusterEvent{Room: ev.Room, Kind: "delta", From: peer, State: reply.Missing}
+			if len(remoteDelta.State) > 0 && apply != nil {
+				apply(remoteDelta)
+			}
+			localDelta := make(map[string]crdt.Register)
+			for key, reg := range localPage {
+				if reply.Entries[key] != digestEntry(reg) {
+					localDelta[key] = reg
+				}
+			}
+			if len(localDelta) > 0 {
+				delta := ClusterEvent{Room: ev.Room, Kind: "delta", From: ev.From, State: localDelta}
+				deltaBody, marshalErr := MarshalClusterEvent(delta)
+				if marshalErr != nil || len(deltaBody) >= len(snapshotBody) || len(deltaBody) > 1<<20 {
+					fallback = true
+					break
+				}
+				r.postToPeer(peer, delta, deltaBody)
+				transferred += uint64(len(deltaBody))
+			}
+			localLast, remoteLast := lastDigestKey(localPage), lastDigestKey(registersFromDigests(reply.Entries, localPage, reply.Missing))
+			if localLast == "" && remoteLast == "" {
+				break
+			}
+			next := localLast
+			if next == "" || (remoteLast != "" && remoteLast < next) {
+				next = remoteLast
+			}
+			if next <= cursor {
+				fallback = true
+				break
+			}
+			cursor = next
+			if pageNo == 4095 {
+				fallback = true
+			}
+		}
+		if fallback {
+			transferred += r.postSnapshotFallback(peer, ev)
+		}
+	}
+	return transferred
+}
+
+// postSnapshotFallback keeps each fallback event within the cluster ingest
+// body limit, including rooms whose full snapshot exceeds that limit.
+func (r *HTTPClusterRelay) postSnapshotFallback(peer string, ev ClusterEvent) uint64 {
+	keys := make([]string, 0, len(ev.State))
+	for key := range ev.State {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	chunk := make(map[string]crdt.Register)
+	var transferred uint64
+	flush := func() {
+		if len(chunk) == 0 {
+			return
+		}
+		part := ClusterEvent{Room: ev.Room, Kind: "snapshot", From: ev.From, Epoch: ev.Epoch, State: chunk}
+		body, err := MarshalClusterEvent(part)
+		if err == nil && len(body) <= 1<<20 {
+			r.postToPeer(peer, part, body)
+			transferred += uint64(len(body))
+		}
+		chunk = make(map[string]crdt.Register)
+	}
+	for _, key := range keys {
+		chunk[key] = ev.State[key]
+		part := ClusterEvent{Room: ev.Room, Kind: "snapshot", From: ev.From, Epoch: ev.Epoch, State: chunk}
+		body, err := MarshalClusterEvent(part)
+		if err == nil && len(body) <= 1<<20 {
+			continue
+		}
+		delete(chunk, key)
+		flush()
+		chunk[key] = ev.State[key]
+		part.State = chunk
+		body, err = MarshalClusterEvent(part)
+		if err != nil || len(body) > 1<<20 {
+			delete(chunk, key)
+			LogEvent("cluster_snapshot_register_too_large", map[string]any{"room": ev.Room})
+		}
+	}
+	flush()
+	return transferred
+}
+
+func registersFromDigests(entries map[string]string, local map[string]crdt.Register, missing map[string]crdt.Register) map[string]crdt.Register {
+	page := make(map[string]crdt.Register, len(entries)+len(missing))
+	for key := range entries {
+		if reg, ok := local[key]; ok {
+			page[key] = reg
+		}
+	}
+	for key, reg := range missing {
+		page[key] = reg
+	}
+	return page
 }

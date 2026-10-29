@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +33,7 @@ const defaultIdleRoomTTL = 60 * time.Second
 // errRoomCapacity is returned when the configured maximum number of live rooms
 // would be exceeded by creating another one.
 var errRoomCapacity = errors.New("room capacity reached")
+var errHubClosing = errors.New("server is shutting down")
 
 // errDocCapacity is returned when a winning write would exceed the per-room
 // document entry or byte budget.
@@ -53,6 +56,7 @@ const defaultCompactEvery = 256
 const (
 	DefaultMaxClients = 256
 	DefaultMaxRooms   = 10000
+	DefaultMaxConns   = 4096
 )
 
 // Wire message type tags (server -> client).
@@ -106,15 +110,25 @@ type Outbound struct {
 // Client is one websocket connection within a Room. Its send channel is owned
 // (and only ever closed) by the room goroutine — see the single-owner model.
 type Client struct {
-	id            string
-	room          *Room
-	send          chan []byte
-	claims        TokenClaims
-	node          string // authoring node id; pinned to prevent mid-stream impersonation
-	delta         bool   // client requested state-vector delta sync on join
-	dead          bool   // room-owned: send has been closed or the client was evicted
-	maxQueueBytes int64  // queued outbound byte budget (0 = unlimited)
-	queuedBytes   atomic.Int64
+	id             string
+	room           *Room
+	send           chan []byte
+	claims         TokenClaims
+	node           string // authoring node id; pinned to prevent mid-stream impersonation
+	delta          bool   // client requested state-vector delta sync on join
+	dead           bool   // room-owned: send has been closed or the client was evicted
+	maxQueueBytes  int64  // queued outbound byte budget (0 = unlimited)
+	queuedBytes    atomic.Int64
+	hub            *Hub
+	connectionOnce sync.Once
+}
+
+func (c *Client) releaseConnection() {
+	c.connectionOnce.Do(func() {
+		if c.hub != nil {
+			c.hub.connectionsCurrent.Add(-1)
+		}
+	})
 }
 
 // acceptsNode binds the connection to a single authoring node on first use and
@@ -146,14 +160,18 @@ func (c *Client) canPresence() bool {
 // mutation of room state happens inside that goroutine, so the document needs
 // no locks — concurrency is structured as message passing, not shared memory.
 type command struct {
-	kind    string // "join" | "leave" | "op" | "merge" | "presence" | "ack" | "stats"
-	client  *Client
-	in      Inbound
-	cluster *ClusterEvent
-	reply   chan RoomStats                // for "stats"
-	export  chan map[string]crdt.Register // for "export"
-	result  chan bool                     // for admin actions
-	done    chan struct{}                 // for "shutdown"
+	kind      string // "join" | "leave" | "op" | "merge" | "presence" | "ack" | "stats"
+	requestID string
+	client    *Client
+	in        Inbound
+	cluster   *ClusterEvent
+	reply     chan RoomStats                // for "stats"
+	export    chan map[string]crdt.Register // for "export"
+	result    chan bool                     // for admin actions
+	done      chan struct{}                 // for "shutdown"
+	roomErr   chan error                    // for purge
+	idleOnly  bool
+	digest    chan string
 }
 
 // Room is one collaborative document: a CRDT plus the set of connected clients.
@@ -183,9 +201,26 @@ type Room struct {
 	loadErr         error
 	idleTTL         time.Duration
 	idleTimer       *time.Timer
+	redisLog        RedisRoomStore
+	redisLease      RedisLease
+	redisOffset     string
+	redisOps        int
+	redisLost       atomic.Bool
 }
 
-func newRoom(id, owner string, hub *Hub, idleTTL time.Duration, st store.Store, compactEvery, maxClients int, maxLogBytes int64, limits Limits, bus ClusterBus, relay ClusterRelay, nodeID string) *Room {
+func (r *Room) logRoomID() string {
+	if r.redisLog != nil {
+		return redisRoomHash(r.id)
+	}
+	return r.id
+}
+
+type roomRedisLease struct {
+	log   RedisRoomStore
+	lease RedisLease
+}
+
+func newRoom(id, owner string, hub *Hub, idleTTL time.Duration, st store.Store, compactEvery, maxClients int, maxLogBytes int64, limits Limits, bus ClusterBus, relay ClusterRelay, nodeID string, redisLease ...roomRedisLease) *Room {
 	r := &Room{
 		id:           id,
 		owner:        owner,
@@ -207,6 +242,10 @@ func newRoom(id, owner string, hub *Hub, idleTTL time.Duration, st store.Store, 
 		maxLogBytes:  maxLogBytes,
 		limits:       limits,
 		idleTTL:      idleTTL,
+	}
+	if len(redisLease) > 0 {
+		r.redisLog = redisLease[0].log
+		r.redisLease = redisLease[0].lease
 	}
 	if bus != nil {
 		ch, unsubscribe := bus.Subscribe(id)
@@ -240,9 +279,12 @@ func (r *Room) applyAndPersist(key string, reg crdt.Register) (crdt.Register, er
 	if r.loadErr != nil {
 		return crdt.Register{}, errLoadFailed
 	}
+	if r.redisLog != nil && r.redisLost.Load() {
+		return crdt.Register{}, errRedisFenceLost
+	}
 	_, span := otel.Tracer("syncwell").Start(context.Background(), "crdt.apply",
 		trace.WithAttributes(
-			attribute.String("syncwell.room", r.id),
+			attribute.String("syncwell.room", r.logRoomID()),
 			attribute.String("syncwell.key", key),
 			attribute.String("syncwell.node", reg.TS.Node),
 		),
@@ -267,10 +309,25 @@ func (r *Room) applyAndPersist(key string, reg crdt.Register) (crdt.Register, er
 		if !r.doc.Fits(key, reg, r.limits.MaxDocEntries, r.limits.MaxDocBytes) {
 			return cur, errDocCapacity
 		}
+		if r.redisLog != nil {
+			id, err := r.redisLog.Append(context.Background(), r.redisLease, ClusterEvent{
+				Room: r.id, Kind: "op", From: r.nodeID, Epoch: r.epoch,
+				Key: key, Register: &winner,
+			})
+			if err != nil {
+				if r.hub != nil {
+					r.hub.redisStreamErrors.Add(1)
+				}
+				r.markRedisLost()
+				return cur, errRedisFenceLost
+			}
+			r.redisOffset = id
+			r.redisOps++
+		}
 		if r.store != nil {
 			if err := r.store.Append(r.id, store.Record{Key: key, Reg: winner}); err != nil {
 				span.SetStatus(codes.Error, "persist failed")
-				LogEvent("room_persist_error", map[string]any{"room": r.id, "error": err.Error(), "key": key})
+				LogEvent("room_persist_error", map[string]any{"room": r.logRoomID(), "error": err.Error(), "key": key})
 				return cur, errPersist
 			}
 		}
@@ -283,6 +340,19 @@ func (r *Room) applyAndPersist(key string, reg crdt.Register) (crdt.Register, er
 		return winner, nil
 	}
 	return winner, nil
+}
+
+func (r *Room) markRedisLost() {
+	if r.redisLost.Swap(true) {
+		return
+	}
+	if r.hub != nil {
+		r.hub.redisLeaseLosses.Add(1)
+	}
+	select {
+	case r.cmds <- command{kind: "lease-lost"}:
+	default:
+	}
 }
 
 // logSizer is implemented by stores that can report their append-log size.
@@ -316,15 +386,110 @@ func (r *Room) maintain() {
 	// observable benefit (clients keep their own tombstones harmlessly).
 	if lw := r.lowWater(); lw > 0 {
 		if n := r.doc.CollectTombstones(lw); n > 0 {
-			LogEvent("room_gc", map[string]any{"room": r.id, "tombstones": n, "low_water": lw})
+			LogEvent("room_gc", map[string]any{"room": r.logRoomID(), "tombstones": n, "low_water": lw})
 		}
 	}
 	if r.store != nil {
 		if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
-			LogEvent("room_compact_error", map[string]any{"room": r.id, "error": err.Error()})
+			if r.hub != nil {
+				r.hub.compactionFailures.Add(1)
+			}
+			LogEvent("room_compact_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
 		} else if !r.persisted {
 			r.persisted = true
 			r.hub.emitWebhook("room.persisted", r.id, map[string]any{"registers": len(r.doc.Snapshot())})
+		}
+	}
+	if r.redisLog != nil && r.redisOffset != "" {
+		if err := r.saveRedisSnapshot(); err != nil {
+			if r.hub != nil {
+				r.hub.redisStreamErrors.Add(1)
+			}
+			if r.hub != nil {
+				r.hub.compactionFailures.Add(1)
+			}
+			LogEvent("redis_snapshot_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+		}
+	}
+}
+
+func (r *Room) saveRedisSnapshot() error {
+	state := r.doc.Snapshot()
+	encoded := make(map[string]json.RawMessage, len(state))
+	for key, reg := range state {
+		b, err := json.Marshal(reg)
+		if err != nil {
+			return err
+		}
+		encoded[key] = b
+	}
+	return r.redisLog.SaveSnapshot(context.Background(), r.redisLease, r.id, r.redisOffset, encoded)
+}
+
+func (r *Room) loadRedisState() error {
+	started := time.Now()
+	defer func() { r.hub.metrics.redisReplay.observe(time.Since(started).Seconds()) }()
+	offset, encoded, err := r.redisLog.LoadSnapshot(context.Background(), r.id)
+	if err != nil {
+		r.hub.redisStreamErrors.Add(1)
+		return err
+	}
+	r.redisOffset = offset
+	for key, raw := range encoded {
+		var reg crdt.Register
+		if err := json.Unmarshal(raw, &reg); err != nil {
+			return err
+		}
+		if !r.doc.Fits(key, reg, r.limits.MaxDocEntries, r.limits.MaxDocBytes) {
+			return errDocCapacity
+		}
+		r.doc.ApplyRegister(key, reg)
+		r.clock.Observe(reg.TS)
+	}
+	for pages := 0; pages < 1_000_000; pages++ {
+		events, last, err := r.redisLog.Replay(context.Background(), r.id, offset, 1000)
+		if err != nil {
+			r.hub.redisStreamErrors.Add(1)
+			return err
+		}
+		if len(events) == 0 {
+			return nil
+		}
+		for _, ev := range events {
+			if ev.Kind != "op" || ev.Register == nil {
+				continue
+			}
+			if !r.doc.Fits(ev.Key, *ev.Register, r.limits.MaxDocEntries, r.limits.MaxDocBytes) {
+				return errDocCapacity
+			}
+			r.doc.ApplyRegister(ev.Key, *ev.Register)
+			r.clock.Observe(ev.Register.TS)
+		}
+		offset = last
+		r.redisOffset = last
+		if len(events) < 1000 {
+			return nil
+		}
+	}
+	return errors.New("redis replay page limit exceeded")
+}
+
+func (r *Room) renewRedisLease() {
+	ticker := r.hub.redisTickerFactory(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.Chan():
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err := r.redisLog.Renew(ctx, r.redisLease)
+			cancel()
+			if err == nil {
+				continue
+			}
+			r.markRedisLost()
+			return
 		}
 	}
 }
@@ -397,7 +562,7 @@ func (r *Room) loadPersisted() {
 	}
 	if err != nil {
 		r.loadErr = err
-		LogEvent("room_load_error", map[string]any{"room": r.id, "error": err.Error(), "action": "refusing joins and writes; original log left intact"})
+		LogEvent("room_load_error", map[string]any{"room": r.logRoomID(), "error": err.Error(), "action": "refusing joins and writes; original log left intact"})
 		return
 	}
 	r.doc.Load(snap)
@@ -464,9 +629,17 @@ func (r *Room) evictIfEmpty() bool {
 	r.disarmIdle()
 	if r.store != nil {
 		if r.loadErr != nil {
-			LogEvent("room_compact_refused", map[string]any{"room": r.id, "error": r.loadErr.Error()})
+			LogEvent("room_compact_refused", map[string]any{"room": r.logRoomID(), "error": r.loadErr.Error()})
 		} else if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
-			LogEvent("room_compact_error", map[string]any{"room": r.id, "error": err.Error()})
+			if r.hub != nil {
+				r.hub.compactionFailures.Add(1)
+			}
+			LogEvent("room_compact_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+		}
+		if closer, ok := r.store.(interface{ CloseRoom(string) error }); ok {
+			if err := closer.CloseRoom(r.id); err != nil {
+				LogEvent("room_close_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+			}
 		}
 	}
 	if r.unsubscribe != nil {
@@ -477,23 +650,37 @@ func (r *Room) evictIfEmpty() bool {
 		r.hub.removeRoom(r)
 		r.hub.emitWebhook("room.evicted", r.id, map[string]any{"idle_ttl": r.idleTTL.String()})
 	}
-	LogEvent("room_evicted", map[string]any{"room": r.id, "idle_ttl": r.idleTTL.String()})
+	LogEvent("room_evicted", map[string]any{"room": r.logRoomID(), "idle_ttl": r.idleTTL.String()})
 	return true
 }
 
 // forceEvict tears the room down even if clients are connected. It is used by
 // the admin dashboard for operator-initiated eviction (for example, before a
 // rolling restart) and broadcasts a close to every attached client.
-func (r *Room) forceEvict() {
+func (r *Room) forceEvict(requestID string) {
 	for cl := range r.clients {
 		r.removeClient(cl)
 	}
 	r.disarmIdle()
 	if r.store != nil {
+		fields := map[string]any{"room": r.logRoomID(), "forced": true}
+		if requestID != "" {
+			fields["request_id"] = requestID
+		}
 		if r.loadErr != nil {
-			LogEvent("room_compact_refused", map[string]any{"room": r.id, "error": r.loadErr.Error(), "forced": true})
+			fields["error"] = r.loadErr.Error()
+			LogEvent("room_compact_refused", fields)
 		} else if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
-			LogEvent("room_compact_error", map[string]any{"room": r.id, "error": err.Error()})
+			if r.hub != nil {
+				r.hub.compactionFailures.Add(1)
+			}
+			fields["error"] = err.Error()
+			LogEvent("room_compact_error", fields)
+		}
+		if closer, ok := r.store.(interface{ CloseRoom(string) error }); ok {
+			if err := closer.CloseRoom(r.id); err != nil {
+				LogEvent("room_close_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+			}
 		}
 	}
 	if r.unsubscribe != nil {
@@ -504,17 +691,42 @@ func (r *Room) forceEvict() {
 		r.hub.removeRoom(r)
 		r.hub.emitWebhook("room.evicted", r.id, map[string]any{"forced": true})
 	}
-	LogEvent("room_evicted", map[string]any{"room": r.id, "forced": true})
+	fields := map[string]any{"room": r.logRoomID(), "forced": true}
+	if requestID != "" {
+		fields["request_id"] = requestID
+	}
+	LogEvent("room_evicted", fields)
 }
 
 // loop is the room's single owner goroutine. It is the *only* place that reads
 // or writes r.doc, r.clock, and r.clients, which is what makes the lock-free
 // design correct.
 func (r *Room) loop() {
+	var shutdownDone chan struct{}
+	defer func() {
+		if shutdownDone != nil {
+			close(shutdownDone)
+		}
+	}()
 	defer close(r.done)
+	if r.redisLog != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := r.redisLog.Release(ctx, r.redisLease); err != nil && !errors.Is(err, errRedisFenceLost) {
+				if r.hub != nil {
+					r.hub.redisStreamErrors.Add(1)
+				}
+				LogEvent("redis_lease_release_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+			}
+			if r.hub != nil {
+				r.hub.redisLeasesCurrent.Add(-1)
+			}
+		}()
+	}
 	defer func() {
 		if p := recover(); p != nil {
-			LogEvent("room_panic", map[string]any{"room": r.id, "panic": fmt.Sprint(p), "stack": string(debug.Stack())})
+			LogEvent("room_panic", map[string]any{"room": r.logRoomID(), "panic": fmt.Sprint(p), "stack": string(debug.Stack())})
 			for cl := range r.clients {
 				r.removeClient(cl)
 			}
@@ -527,8 +739,22 @@ func (r *Room) loop() {
 			}
 		}
 	}()
-	r.loadPersisted()
+	if r.redisLog != nil {
+		if err := r.loadRedisState(); err != nil {
+			r.loadErr = err
+			LogEvent("redis_replay_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+		}
+	} else {
+		r.loadPersisted()
+	}
 	for c := range r.cmds {
+		if r.redisLost.Load() && c.kind != "lease-lost" && c.kind != "shutdown" {
+			if c.client != nil {
+				r.rejectClient(c.client, "room owner lease lost")
+				r.removeClient(c.client)
+			}
+			continue
+		}
 		// Commands from clients that were rejected or evicted can still be
 		// queued behind the event that removed them; drop them instead of
 		// writing to a closed send channel.
@@ -536,6 +762,15 @@ func (r *Room) loop() {
 			continue
 		}
 		switch c.kind {
+		case "lease-lost":
+			for cl := range r.clients {
+				r.sendTo(cl, Outbound{Type: msgError, Data: json.RawMessage(`"room owner lease lost"`)})
+				r.removeClient(cl)
+			}
+			if r.hub != nil {
+				r.hub.removeRoom(r)
+			}
+			return
 		case "join":
 			r.disarmIdle()
 			if r.loadErr != nil {
@@ -756,13 +991,26 @@ func (r *Room) loop() {
 			}
 			c.export <- r.doc.Snapshot()
 
+		case "digest":
+			if c.digest != nil {
+				if r.loadErr != nil {
+					c.digest <- ""
+				} else {
+					c.digest <- DigestRegisters(r.doc.Snapshot())
+				}
+			}
+
 		case "stats":
 			s := r.doc.Stats()
 			c.reply <- RoomStats{Clients: len(r.clients), Live: s.Live, Tombstones: s.Tombstones, LowWater: r.lowWater(), Owner: r.owner}
 
 		case "resnapshot":
 			if r.loadErr != nil {
-				LogEvent("room_resnapshot_refused", map[string]any{"room": r.id, "error": r.loadErr.Error()})
+				fields := map[string]any{"room": r.logRoomID(), "error": r.loadErr.Error()}
+				if c.requestID != "" {
+					fields["request_id"] = c.requestID
+				}
+				LogEvent("room_resnapshot_refused", fields)
 				if c.result != nil {
 					c.result <- false
 				}
@@ -771,18 +1019,62 @@ func (r *Room) loop() {
 			r.broadcast(Outbound{Type: msgSnapshot, State: r.doc.Snapshot(), Epoch: r.epoch}, nil)
 			if r.store != nil {
 				if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
-					LogEvent("room_compact_error", map[string]any{"room": r.id, "error": err.Error()})
+					if r.hub != nil {
+						r.hub.compactionFailures.Add(1)
+					}
+					fields := map[string]any{"room": r.logRoomID(), "error": err.Error()}
+					if c.requestID != "" {
+						fields["request_id"] = c.requestID
+					}
+					LogEvent("room_compact_error", fields)
 				}
 			}
-			LogEvent("room_resnapshot", map[string]any{"room": r.id})
+			fields := map[string]any{"room": r.logRoomID()}
+			if c.requestID != "" {
+				fields["request_id"] = c.requestID
+			}
+			LogEvent("room_resnapshot", fields)
 			if c.result != nil {
 				c.result <- true
 			}
 
 		case "force_evict":
-			r.forceEvict()
+			r.forceEvict(c.requestID)
 			if c.result != nil {
 				c.result <- true
+			}
+			return
+
+		case "purge":
+			if c.idleOnly && len(r.clients) > 0 {
+				if c.roomErr != nil {
+					c.roomErr <- errRoomHasClients
+				}
+				continue
+			}
+			for cl := range r.clients {
+				r.removeClient(cl)
+			}
+			var err error
+			if r.store != nil {
+				err = r.store.Delete(r.id)
+			}
+			if err == nil && r.redisLog != nil {
+				err = r.redisLog.Purge(context.Background(), r.redisLease, r.id)
+			}
+			if err != nil {
+				if c.roomErr != nil {
+					c.roomErr <- err
+				}
+				continue
+			}
+			LogEvent("room_purged", map[string]any{"room": r.logRoomID(), "request_id": c.requestID})
+			r.hub.emitWebhook("room.purged", r.id, map[string]any{"request_id": c.requestID})
+			if r.hub != nil {
+				r.hub.removeRoom(r)
+			}
+			if c.roomErr != nil {
+				c.roomErr <- nil
 			}
 			return
 
@@ -792,6 +1084,17 @@ func (r *Room) loop() {
 			}
 
 		case "shutdown":
+			if r.store != nil {
+				if err := r.store.Compact(r.id, r.doc.Snapshot()); err != nil {
+					LogEvent("shutdown_room_flush_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+				}
+			}
+			if r.redisLog != nil && r.redisOffset != "" {
+				if err := r.saveRedisSnapshot(); err != nil {
+					r.hub.redisStreamErrors.Add(1)
+					LogEvent("shutdown_redis_snapshot_error", map[string]any{"room": r.logRoomID(), "error": err.Error()})
+				}
+			}
 			for cl := range r.clients {
 				r.removeClient(cl)
 			}
@@ -800,7 +1103,7 @@ func (r *Room) loop() {
 				r.unsubscribe = nil
 			}
 			if c.done != nil {
-				close(c.done)
+				shutdownDone = c.done
 			}
 			return
 		}
@@ -817,7 +1120,7 @@ func (r *Room) applyCluster(ev ClusterEvent) {
 		// writes; a remote op must survive a restart just like a local one.
 		winner, err := r.applyAndPersist(ev.Key, *ev.Register)
 		if err != nil {
-			LogEvent("cluster_persist_error", map[string]any{"room": r.id, "key": ev.Key, "from": ev.From, "error": err.Error()})
+			LogEvent("cluster_persist_error", map[string]any{"room": r.logRoomID(), "key": ev.Key, "from": ev.From, "error": err.Error()})
 			return
 		}
 		r.broadcast(Outbound{Type: msgOp, Key: ev.Key, Register: &winner, Epoch: r.epoch}, nil)
@@ -835,7 +1138,17 @@ func (r *Room) applyCluster(ev ClusterEvent) {
 		// join per key so concurrent local writes are preserved (CRDT merge).
 		for k, reg := range ev.State {
 			if _, err := r.applyAndPersist(k, reg); err != nil {
-				LogEvent("cluster_persist_error", map[string]any{"room": r.id, "key": k, "from": ev.From, "error": err.Error()})
+				LogEvent("cluster_persist_error", map[string]any{"room": r.logRoomID(), "key": k, "from": ev.From, "error": err.Error()})
+			}
+		}
+		r.broadcast(Outbound{Type: msgSnapshot, State: r.doc.Snapshot(), Epoch: r.epoch}, nil)
+	case "delta":
+		if ev.State == nil || (ev.Epoch != 0 && ev.Epoch != r.epoch) {
+			return
+		}
+		for k, reg := range ev.State {
+			if _, err := r.applyAndPersist(k, reg); err != nil {
+				LogEvent("cluster_persist_error", map[string]any{"room": r.logRoomID(), "key": k, "from": ev.From, "error": err.Error()})
 			}
 		}
 		r.broadcast(Outbound{Type: msgSnapshot, State: r.doc.Snapshot(), Epoch: r.epoch}, nil)
@@ -865,7 +1178,7 @@ func (r *Room) broadcast(o Outbound, except *Client) {
 	}
 	b, err := json.Marshal(o)
 	if err != nil {
-		LogEvent("room_marshal_error", map[string]any{"room": r.id, "error": err.Error(), "type": o.Type})
+		LogEvent("room_marshal_error", map[string]any{"room": r.logRoomID(), "error": err.Error(), "type": o.Type})
 		return
 	}
 	for cl := range r.clients {
@@ -969,7 +1282,9 @@ func (r *Room) removeClient(cl *Client) bool {
 
 // Config configures a Hub. The zero value is a valid, fully-open dev server.
 type Config struct {
+	ClusterMode          string        // relay (default) or redis
 	Store                store.Store   // nil = in-memory only
+	AuditLogger          *AuditLogger  // optional append-only audit file sink; events always go to stderr
 	CompactEvery         int           // <=0 = default
 	Secret               string        // "" = auth disabled (open) unless OIDC is set
 	PreviousSecrets      []string      // old room-token secrets accepted during rotation
@@ -990,6 +1305,7 @@ type Config struct {
 	RequireOrigins       bool          // reject browser upgrades without a configured, matching Origin
 	AllowAnyOrigin       bool          // explicit escape hatch for non-browser clients
 	MaxClients           int           // 0 = unlimited per room; main.go defaults this to 256
+	MaxConns             int64         // 0 = unlimited process-wide WebSocket connections; main.go defaults this to 4096
 	MaxRooms             int           // 0 = unlimited live rooms; main.go defaults this to 10000
 	MaxLogBytes          int64         // 0 = unlimited room log size before compaction
 	IdleRoomTTL          time.Duration // <=0 = default, <0 disables idle eviction
@@ -1002,17 +1318,56 @@ type Config struct {
 	ClusterAllowHTTP     bool // explicitly allow plaintext cluster relay (private network only)
 	ClusterPath          string
 	ClusterHTTP          *http.Client
-	AntiEntropyInterval  time.Duration // <=0 = disabled
+	RedisRoomLog         RedisRoomStore
+	NodeAdvertise        map[string]string // node id -> public wss URL for /route
+	AntiEntropyInterval  time.Duration     // <=0 = disabled
 	WebhookURLs          []string
 	WebhookSecret        string
 	WebhookTimeout       time.Duration
 	WebhookQueue         int
 	WebhookAllowPrivate  bool // explicitly allow private/loopback webhook destinations
+	Retention            time.Duration
+	RetentionDryRun      bool
+	redisTickerFactory   func(time.Duration) redisTicker
 }
+
+type redisTicker interface {
+	Chan() <-chan time.Time
+	Stop()
+}
+
+type wallClockRedisTicker struct{ ticker *time.Ticker }
+
+func (t wallClockRedisTicker) Chan() <-chan time.Time { return t.ticker.C }
+func (t wallClockRedisTicker) Stop()                  { t.ticker.Stop() }
 
 // Validate reports clustering configuration that cannot work. Single-node mode
 // (no ClusterPeers) is always valid.
 func (c Config) Validate() error {
+	mode := c.ClusterMode
+	if mode == "" {
+		mode = "relay"
+	}
+	if mode != "relay" && mode != "redis" {
+		return errors.New("-cluster-mode must be relay or redis")
+	}
+	if mode == "redis" {
+		if c.RedisRoomLog == nil {
+			return errors.New("-cluster-mode=redis requires a Redis room log")
+		}
+		if !validRedisNodeID(strings.TrimSpace(c.NodeID)) {
+			return errors.New("-cluster-mode=redis requires a node ID of 1-128 ASCII letters, digits, dot, underscore, or hyphen")
+		}
+		if c.NodeAdvertise[strings.TrimSpace(c.NodeID)] == "" {
+			return errors.New("-cluster-mode=redis requires this node's advertised WebSocket URL")
+		}
+		if len(c.ClusterPeers) > 0 || len(c.Peers) > 0 {
+			return errors.New("-cluster-peers and -node-peers apply only to relay mode; advertise every Redis node with -node-advertise")
+		}
+		if c.Retention > 0 {
+			return errors.New("-retention is not supported in Redis ownership mode; use explicit room purge")
+		}
+	}
 	if c.Secret == "" && len(c.PreviousSecrets) > 0 {
 		return errors.New("-secret-previous requires -secret (or SYNCWELL_SECRET_PREVIOUS requires SYNCWELL_SECRET)")
 	}
@@ -1036,6 +1391,9 @@ func (c Config) Validate() error {
 	if err := ValidateWebhookURLs(c.WebhookURLs, c.WebhookAllowPrivate); err != nil {
 		return fmt.Errorf("-webhook-urls (SYNCWELL_WEBHOOK_URLS): %w", err)
 	}
+	if mode == "redis" {
+		return nil
+	}
 	if len(c.ClusterPeers) == 0 {
 		return nil
 	}
@@ -1056,13 +1414,13 @@ func (c Config) Validate() error {
 			return fmt.Errorf("-cluster-peers entry %q: %w", raw, err)
 		}
 		scheme := strings.ToLower(u.Scheme)
-		if scheme != "https" && scheme != "http" {
+		if !u.IsAbs() || u.Opaque != "" || (scheme != "https" && scheme != "http") {
 			return fmt.Errorf("-cluster-peers entry %q must use https", raw)
 		}
-		if u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return fmt.Errorf("-cluster-peers entry %q must be a URL with no credentials, query, or fragment", raw)
+		if u.Host == "" || u.User != nil || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return fmt.Errorf("-cluster-peers entry %q must be a URL with no credentials, path, query, or fragment", raw)
 		}
-		if scheme == "http" && !c.ClusterAllowHTTP && !loopbackHost(u.Hostname()) {
+		if scheme == "http" && !c.ClusterAllowHTTP {
 			return fmt.Errorf("-cluster-peers entry %q uses plaintext http; use https or set -cluster-insecure for a trusted private network", raw)
 		}
 	}
@@ -1073,6 +1431,7 @@ func (c Config) Validate() error {
 type Hub struct {
 	mu       sync.Mutex
 	rooms    map[string]*Room
+	creating map[string]chan struct{}
 	cfg      Config
 	planner  *ShardPlanner
 	nodeID   string
@@ -1088,6 +1447,7 @@ type Hub struct {
 	adminNets      []*net.IPNet
 	clusterNets    []*net.IPNet
 	wsNets         []*net.IPNet
+	purging        map[string]bool
 
 	metrics  *hubMetrics
 	webhooks *WebhookDispatcher
@@ -1096,8 +1456,32 @@ type Hub struct {
 	aeDone chan struct{}
 	aeOnce sync.Once
 
-	clusterIngested atomic.Uint64
-	clusterDropped  atomic.Uint64
+	clusterIngested     atomic.Uint64
+	clusterDropped      atomic.Uint64
+	processNonce        string
+	redisTickerFactory  func(time.Duration) redisTicker
+	redisLeasesCurrent  atomic.Int64
+	redisLeaseAcquired  atomic.Uint64
+	redisRehomes        atomic.Uint64
+	redisLeaseLosses    atomic.Uint64
+	redisStreamErrors   atomic.Uint64
+	tokenInQuery        atomic.Uint64
+	lastTokenQueryLog   atomic.Int64
+	connectionsCurrent  atomic.Int64
+	connectionRejects   atomic.Uint64
+	commandQueueRejects atomic.Uint64
+	lastCommandQueueLog atomic.Int64
+	compactionFailures  atomic.Uint64
+	antiEntropyBytes    atomic.Uint64
+	auditAuthMu         sync.Mutex
+	auditAuthLast       map[string]time.Time
+}
+
+func (h *Hub) logRoomID(room string) string {
+	if h.cfg.RedisRoomLog != nil {
+		return redisRoomHash(room)
+	}
+	return room
 }
 
 // hubMetrics holds process-wide histograms (no per-room labels to keep
@@ -1106,6 +1490,7 @@ type hubMetrics struct {
 	applyDuration      *histogram
 	inboundFrameBytes  *histogram
 	outboundFrameBytes *histogram
+	redisReplay        *histogram
 }
 
 func newHubMetrics() *hubMetrics {
@@ -1119,11 +1504,15 @@ func newHubMetrics() *hubMetrics {
 		outboundFrameBytes: newHistogram([]float64{
 			128, 512, 1024, 4096, 16384, 65536, 262144, 1048576,
 		}),
+		redisReplay: newHistogram([]float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 15, 30}),
 	}
 }
 
 // NewHub returns a hub for the given config.
 func NewHub(cfg Config) *Hub {
+	if cfg.MaxConns < 0 {
+		cfg.MaxConns = DefaultMaxConns
+	}
 	if cfg.MaxClients < 0 {
 		cfg.MaxClients = DefaultMaxClients
 	}
@@ -1140,7 +1529,7 @@ func NewHub(cfg Config) *Hub {
 	} else if idleTTL < 0 {
 		idleTTL = 0 // explicitly disabled
 	}
-	nodeID := cfg.NodeID
+	nodeID := strings.TrimSpace(cfg.NodeID)
 	if nodeID == "" {
 		nodeID = "local"
 	}
@@ -1175,28 +1564,38 @@ func NewHub(cfg Config) *Hub {
 		wsBurst = wsRate
 	}
 	h := &Hub{
-		rooms:          map[string]*Room{},
-		cfg:            cfg,
-		planner:        planner,
-		nodeID:         nodeID,
-		bus:            cfg.Bus,
-		relay:          relay,
-		idleTTL:        idleTTL,
-		maxRooms:       cfg.MaxRooms,
-		adminNets:      adminNets,
-		clusterNets:    clusterNets,
-		wsNets:         nil,
-		adminLimiter:   newTokenLimiter(cfg.AdminRatePerMinute, cfg.AdminBurst, cfg.AdminMaxFailures, cfg.AdminLockout),
-		clusterLimiter: newTokenLimiter(clusterRate, 600, cfg.AdminMaxFailures, cfg.AdminLockout),
-		wsLimiter:      newTokenLimiter(wsRate, wsBurst, cfg.AdminMaxFailures, cfg.AdminLockout),
-		metrics:        newHubMetrics(),
+		rooms:              map[string]*Room{},
+		creating:           map[string]chan struct{}{},
+		cfg:                cfg,
+		planner:            planner,
+		nodeID:             nodeID,
+		bus:                cfg.Bus,
+		relay:              relay,
+		idleTTL:            idleTTL,
+		maxRooms:           cfg.MaxRooms,
+		purging:            map[string]bool{},
+		adminNets:          adminNets,
+		clusterNets:        clusterNets,
+		wsNets:             nil,
+		adminLimiter:       newTokenLimiter(cfg.AdminRatePerMinute, cfg.AdminBurst, cfg.AdminMaxFailures, cfg.AdminLockout),
+		clusterLimiter:     newTokenLimiter(clusterRate, 600, cfg.AdminMaxFailures, cfg.AdminLockout),
+		wsLimiter:          newTokenLimiter(wsRate, wsBurst, cfg.AdminMaxFailures, cfg.AdminLockout),
+		metrics:            newHubMetrics(),
+		processNonce:       newProcessNonce(),
+		redisTickerFactory: cfg.redisTickerFactory,
 		webhooks: NewWebhookDispatcher(WebhookConfig{
-			URLs:         cfg.WebhookURLs,
-			Secret:       cfg.WebhookSecret,
-			Timeout:      cfg.WebhookTimeout,
-			Queue:        cfg.WebhookQueue,
-			AllowPrivate: cfg.WebhookAllowPrivate,
+			URLs:           cfg.WebhookURLs,
+			Secret:         cfg.WebhookSecret,
+			Timeout:        cfg.WebhookTimeout,
+			Queue:          cfg.WebhookQueue,
+			AllowPrivate:   cfg.WebhookAllowPrivate,
+			HashRoomInLogs: cfg.RedisRoomLog != nil,
 		}),
+	}
+	if h.redisTickerFactory == nil {
+		h.redisTickerFactory = func(interval time.Duration) redisTicker {
+			return wallClockRedisTicker{ticker: time.NewTicker(interval)}
+		}
 	}
 	if cfg.AntiEntropyInterval > 0 && len(cfg.ClusterPeers) > 0 {
 		h.aeStop = make(chan struct{})
@@ -1206,8 +1605,8 @@ func NewHub(cfg Config) *Hub {
 	return h
 }
 
-// antiEntropyLoop periodically pushes each live room's full state to peers so
-// events dropped by a saturated queue or a peer restart still converge.
+// antiEntropyLoop periodically reconciles each live room with peers so events
+// dropped by a saturated queue or a peer restart still converge.
 func (h *Hub) antiEntropyLoop(interval time.Duration) {
 	defer close(h.aeDone)
 	t := time.NewTicker(interval)
@@ -1245,16 +1644,25 @@ func (h *Hub) antiEntropyOnce() {
 				continue
 			}
 			ev := ClusterEvent{Room: r.id, Kind: "snapshot", From: h.nodeID, State: snap}
+			if payload, err := json.Marshal(ev); err == nil && h.relay == nil {
+				h.antiEntropyBytes.Add(uint64(len(payload)))
+			}
 			if h.bus != nil {
 				h.bus.Publish(ev)
 			}
 			if h.relay != nil {
-				h.relay.Publish(ev)
+				if digestRelay, ok := h.relay.(interface {
+					AntiEntropy(ClusterEvent, string, func(ClusterEvent)) uint64
+				}); ok {
+					h.antiEntropyBytes.Add(digestRelay.AntiEntropy(ev, DigestRegisters(snap), func(delta ClusterEvent) { _ = h.ingestClusterEvent(delta) }))
+				} else {
+					h.relay.Publish(ev)
+				}
 			}
 		case <-h.aeStop:
 			return
 		case <-time.After(time.Second):
-			LogEvent("anti_entropy_timeout", map[string]any{"room": r.id})
+			LogEvent("anti_entropy_timeout", map[string]any{"room": h.logRoomID(r.id)})
 		}
 	}
 }
@@ -1262,23 +1670,237 @@ func (h *Hub) antiEntropyOnce() {
 // room returns the room for id, creating it if necessary. It returns
 // errRoomCapacity when creating a new room would exceed Config.MaxRooms.
 func (h *Hub) room(id string) (*Room, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if r, ok := h.rooms[id]; ok {
-		return r, nil
+	for {
+		h.mu.Lock()
+		if h.purging[id] {
+			h.mu.Unlock()
+			return nil, errRoomPurging
+		}
+		if r, ok := h.rooms[id]; ok {
+			h.mu.Unlock()
+			if r.redisLost.Load() {
+				return nil, errRedisFenceLost
+			}
+			return r, nil
+		}
+		if wait, ok := h.creating[id]; ok {
+			h.mu.Unlock()
+			<-wait
+			continue
+		}
+		if h.closing.Load() {
+			h.mu.Unlock()
+			return nil, errHubClosing
+		}
+		if h.maxRooms > 0 && len(h.rooms) >= h.maxRooms {
+			h.mu.Unlock()
+			return nil, errRoomCapacity
+		}
+		wait := make(chan struct{})
+		h.creating[id] = wait
+		h.mu.Unlock()
+		break
 	}
-	if h.maxRooms > 0 && len(h.rooms) >= h.maxRooms {
-		return nil, errRoomCapacity
+	finishCreation := func() {
+		h.mu.Lock()
+		if wait, ok := h.creating[id]; ok {
+			delete(h.creating, id)
+			close(wait)
+		}
+		h.mu.Unlock()
 	}
 	owner := ""
-	if h.planner != nil {
-		owner = h.planner.Owner(id)
+	var lease RedisLease
+	if h.cfg.RedisRoomLog != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		var err error
+		lease, err = h.cfg.RedisRoomLog.Acquire(ctx, id, h.nodeID, h.processNonce)
+		cancel()
+		if err != nil {
+			finishCreation()
+			return nil, err
+		}
+		h.redisLeasesCurrent.Add(1)
+		h.redisLeaseAcquired.Add(1)
+		if lease.epoch > 1 {
+			h.redisRehomes.Add(1)
+		}
+		owner = h.nodeID
 	}
-	r := newRoom(id, owner, h, h.idleTTL, h.cfg.Store, h.cfg.CompactEvery, h.cfg.MaxClients, h.cfg.MaxLogBytes, h.cfg.Limits, h.bus, h.relay, h.nodeID)
+	if h.planner != nil {
+		if h.cfg.RedisRoomLog == nil {
+			owner = h.planner.Owner(id)
+		}
+	}
+	var redisLeaseConfig []roomRedisLease
+	if h.cfg.RedisRoomLog != nil {
+		redisLeaseConfig = append(redisLeaseConfig, roomRedisLease{log: h.cfg.RedisRoomLog, lease: lease})
+	}
+	r := newRoom(id, owner, h, h.idleTTL, h.cfg.Store, h.cfg.CompactEvery, h.cfg.MaxClients, h.cfg.MaxLogBytes, h.cfg.Limits, h.bus, h.relay, h.nodeID, redisLeaseConfig...)
+	if h.cfg.RedisRoomLog != nil {
+		go r.renewRedisLease()
+	}
+	h.mu.Lock()
+	if h.closing.Load() || h.purging[id] {
+		abortErr := errHubClosing
+		if h.purging[id] {
+			abortErr = errRoomPurging
+		}
+		if wait, ok := h.creating[id]; ok {
+			delete(h.creating, id)
+			close(wait)
+		}
+		h.mu.Unlock()
+		done := make(chan struct{})
+		select {
+		case r.cmds <- command{kind: "shutdown", done: done}:
+		case <-r.done:
+			return nil, abortErr
+		}
+		select {
+		case <-done:
+		case <-r.done:
+		}
+		return nil, abortErr
+	}
 	h.rooms[id] = r
-	LogEvent("room_created", map[string]any{"room": id, "owner": owner, "node": h.nodeID})
+	if wait, ok := h.creating[id]; ok {
+		delete(h.creating, id)
+		close(wait)
+	}
+	h.mu.Unlock()
+	LogEvent("room_created", map[string]any{"room": h.logRoomID(id), "owner": owner, "node": h.nodeID})
 	h.emitWebhook("room.created", id, map[string]any{"owner": owner})
 	return r, nil
+}
+
+func newProcessNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+var errRoomPurging = errors.New("room purge in progress")
+
+// PurgeRoom disconnects clients, removes persisted state, and evicts the room.
+func (h *Hub) PurgeRoom(id, requestID string) error {
+	h.mu.Lock()
+	if h.purging[id] {
+		h.mu.Unlock()
+		return errRoomPurging
+	}
+	h.purging[id] = true
+	r := h.rooms[id]
+	h.mu.Unlock()
+	defer func() { h.mu.Lock(); delete(h.purging, id); h.mu.Unlock() }()
+	if r == nil {
+		if h.cfg.Store == nil && h.cfg.RedisRoomLog == nil {
+			return errors.New("room not found")
+		}
+		if h.cfg.Store != nil {
+			if err := h.cfg.Store.Delete(id); err != nil {
+				return err
+			}
+		}
+		if h.cfg.RedisRoomLog != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			lease, err := h.cfg.RedisRoomLog.Acquire(ctx, id, h.nodeID, h.processNonce)
+			if err == nil {
+				err = h.cfg.RedisRoomLog.Purge(ctx, lease, id)
+			}
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+		LogEvent("room_purged", map[string]any{"room": h.logRoomID(id), "request_id": requestID})
+		h.emitWebhook("room.purged", id, map[string]any{"request_id": requestID})
+		return nil
+	}
+	ch := make(chan error, 1)
+	select {
+	case r.cmds <- command{kind: "purge", requestID: requestID, roomErr: ch}:
+	case <-r.done:
+		return errors.New("room not found")
+	}
+	select {
+	case err := <-ch:
+		return err
+	case <-r.done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return context.DeadlineExceeded
+	}
+}
+
+var errRoomHasClients = errors.New("room has connected clients")
+
+// SweepRetentionAt deletes rooms only after both their metadata creation time
+// and log modification time fall outside the retention window.
+func (h *Hub) SweepRetentionAt(now time.Time) error {
+	if h.cfg.Retention <= 0 || h.cfg.Store == nil {
+		return nil
+	}
+	lister, ok := h.cfg.Store.(interface {
+		RoomMetadata() ([]store.RoomMetadata, error)
+	})
+	if !ok {
+		return errors.New("configured store does not support retention metadata")
+	}
+	items, err := lister.RoomMetadata()
+	if err != nil {
+		return err
+	}
+	cutoff := now.Add(-h.cfg.Retention)
+	for _, item := range items {
+		if item.Created.After(cutoff) || item.LogModTime.After(cutoff) {
+			continue
+		}
+		if h.cfg.RetentionDryRun {
+			LogEvent("retention_would_purge", map[string]any{"room": h.logRoomID(item.Room)})
+			continue
+		}
+		if err := h.purgeIdle(item.Room); err != nil && !errors.Is(err, errRoomHasClients) {
+			LogEvent("retention_purge_error", map[string]any{"room": h.logRoomID(item.Room), "error": err.Error()})
+		}
+	}
+	return nil
+}
+
+func (h *Hub) purgeIdle(id string) error {
+	h.mu.Lock()
+	if h.purging[id] {
+		h.mu.Unlock()
+		return nil
+	}
+	h.purging[id] = true
+	r := h.rooms[id]
+	h.mu.Unlock()
+	defer func() { h.mu.Lock(); delete(h.purging, id); h.mu.Unlock() }()
+	if r == nil {
+		if err := h.cfg.Store.Delete(id); err != nil {
+			return err
+		}
+		LogEvent("room_purged", map[string]any{"room": h.logRoomID(id), "reason": "retention"})
+		h.emitWebhook("room.purged", id, map[string]any{"reason": "retention"})
+		return nil
+	}
+	ch := make(chan error, 1)
+	select {
+	case r.cmds <- command{kind: "purge", idleOnly: true, roomErr: ch}:
+	case <-r.done:
+		return nil
+	}
+	select {
+	case err := <-ch:
+		return err
+	case <-r.done:
+		return nil
+	case <-time.After(2 * time.Second):
+		return context.DeadlineExceeded
+	}
 }
 
 // removeRoom deletes an evicted room from the live set (called by the room's
@@ -1294,6 +1916,28 @@ func (h *Hub) removeRoom(r *Room) {
 // Ready reports whether the hub should accept new realtime traffic.
 func (h *Hub) Ready() bool {
 	return !h.closing.Load()
+}
+
+func (h *Hub) recordCommandQueueFull(room string) {
+	h.commandQueueRejects.Add(1)
+	now := time.Now().UnixNano()
+	last := h.lastCommandQueueLog.Load()
+	if now-last >= int64(10*time.Second) && h.lastCommandQueueLog.CompareAndSwap(last, now) {
+		LogEvent("room_command_queue_full", map[string]any{"room": h.logRoomID(room)})
+	}
+}
+
+func (h *Hub) acquireConnection() bool {
+	for {
+		current := h.connectionsCurrent.Load()
+		if h.cfg.MaxConns > 0 && current >= h.cfg.MaxConns {
+			h.connectionRejects.Add(1)
+			return false
+		}
+		if h.connectionsCurrent.CompareAndSwap(current, current+1) {
+			return true
+		}
+	}
 }
 
 // Shutdown rejects new clients and asks all room owner goroutines to close
@@ -1317,22 +1961,25 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 	h.rooms = map[string]*Room{}
 	h.mu.Unlock()
 
+	completed := 0
 	for _, r := range rooms {
 		done := make(chan struct{})
 		select {
 		case r.cmds <- command{kind: "shutdown", done: done}:
 		case <-r.done:
+			completed++
 			continue
 		case <-ctx.Done():
+			LogEvent("shutdown_incomplete", map[string]any{"rooms_total": len(rooms), "rooms_completed": completed, "rooms_remaining": len(rooms) - completed})
 			return ctx.Err()
 		}
-
 		select {
 		case <-done:
 		case <-r.done:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		completed++
 	}
 	if h.webhooks != nil {
 		h.webhooks.Close(ctx)
@@ -1414,13 +2061,17 @@ func (h *Hub) lookupRoom(id string) *Room {
 // ResnapshotRoom pushes the current document to every connected client and
 // compacts the persisted state. Returns false for an unknown room.
 func (h *Hub) ResnapshotRoom(id string) bool {
+	return h.ResnapshotRoomWithRequestID(id, "")
+}
+
+func (h *Hub) ResnapshotRoomWithRequestID(id, requestID string) bool {
 	r := h.lookupRoom(id)
 	if r == nil {
 		return false
 	}
 	result := make(chan bool, 1)
 	select {
-	case r.cmds <- command{kind: "resnapshot", result: result}:
+	case r.cmds <- command{kind: "resnapshot", result: result, requestID: requestID}:
 	case <-r.done:
 		return false
 	}
@@ -1436,13 +2087,17 @@ func (h *Hub) ResnapshotRoom(id string) bool {
 
 // EvictRoom tears down a room (closing its clients) regardless of occupancy.
 func (h *Hub) EvictRoom(id string) bool {
+	return h.EvictRoomWithRequestID(id, "")
+}
+
+func (h *Hub) EvictRoomWithRequestID(id, requestID string) bool {
 	r := h.lookupRoom(id)
 	if r == nil {
 		return false
 	}
 	result := make(chan bool, 1)
 	select {
-	case r.cmds <- command{kind: "force_evict", result: result}:
+	case r.cmds <- command{kind: "force_evict", result: result, requestID: requestID}:
 	case <-r.done:
 		return false
 	}

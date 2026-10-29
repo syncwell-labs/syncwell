@@ -6,7 +6,10 @@ WebSocket implementation uses only the standard library, so ``pip install`` is
 not required.
 
     from syncwell_client import Syncwell
-    sw = Syncwell("ws://localhost:8080/ws", "my-room", client_id="py-1")
+    # Default: token sent via Authorization header (no query string).
+    # Use allow_query_token=True for legacy server compatibility.
+    sw = Syncwell("ws://localhost:8080/ws", "my-room", client_id="py-1",
+                  allow_query_token=False)
     sw.connect()
     sw.set("title", "hello from Python")
     print(sw.live())
@@ -24,6 +27,7 @@ import ssl
 import struct
 import threading
 import time
+import urllib.request
 from urllib.parse import urlencode, urlparse
 
 PROTOCOL_VERSION = 1
@@ -55,7 +59,7 @@ def _register_after(a: dict, b: dict) -> bool:
 class _WebSocket:
     """Tiny RFC 6455 client: text frames, ping/pong, close, fragmentation."""
 
-    def __init__(self, url: str, timeout: float = 10.0):
+    def __init__(self, url: str, timeout: float = 10.0, headers: dict | None = None):
         parsed = urlparse(url)
         if parsed.scheme not in ("ws", "wss"):
             raise SyncwellError("BAD_URL", f"unsupported scheme {parsed.scheme!r}")
@@ -68,6 +72,7 @@ class _WebSocket:
         self.timeout = timeout
         self.sock = None
         self._buffer = b""
+        self.headers = headers or {}
 
     def connect(self):
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
@@ -82,8 +87,10 @@ class _WebSocket:
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
-            "\r\n"
         )
+        for name, value in self.headers.items():
+            request += f"{name}: {value}\r\n"
+        request += "\r\n"
         self.sock.sendall(request.encode())
         response = b""
         while b"\r\n\r\n" not in response:
@@ -189,10 +196,18 @@ class Syncwell:
         token: str | None = None,
         client_id: str | None = None,
         WebSocket=None,
+        allow_query_token: bool = False,
+        follow_owner: bool = False,
+        route_timeout: float = 5.0,
+        route_opener=None,
     ):
         self.base_url = base_url
         self.room = room
         self.token = token
+        self.allow_query_token = allow_query_token
+        self.follow_owner = follow_owner
+        self.route_timeout = route_timeout
+        self._route_opener = route_opener or urllib.request.urlopen
         self.client_id = client_id or f"py-{os.urandom(4).hex()}"
         self._ws_class = WebSocket or _WebSocket
         self._ws = None
@@ -223,19 +238,38 @@ class Syncwell:
             callback(payload)
 
     # -- connection -----------------------------------------------------
-    def _url(self) -> str:
+    def _url(self, base_url: str | None = None) -> str:
         params = {"room": self.room}
-        if self.token:
+        if self.token and self.allow_query_token:
             params["token"] = self.token
-        sep = "&" if "?" in self.base_url else "?"
-        return f"{self.base_url}{sep}{urlencode(params)}"
+        base = base_url or self.base_url
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}{urlencode(params)}"
+
+    def _resolve_owner_url(self) -> str:
+        parsed = urlparse(self.base_url)
+        if parsed.scheme not in ("ws", "wss") or not parsed.netloc:
+            raise ValueError("follow_owner requires an absolute ws:// or wss:// base URL")
+        scheme = "https" if parsed.scheme == "wss" else "http"
+        route_url = f"{scheme}://{parsed.netloc}/route?{urlencode({'room': self.room})}"
+        with self._route_opener(route_url, timeout=self.route_timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        owner_url = payload.get("url") if isinstance(payload, dict) else None
+        owner = urlparse(owner_url or "")
+        if owner.scheme not in ("ws", "wss") or not owner.netloc:
+            raise ValueError("route response must contain an absolute ws:// or wss:// URL")
+        return owner_url
 
     def connect(self):
         if self._ws is not None:
             return self
         self._closed = False
         self._ready.clear()
-        ws = self._ws_class(self._url())
+        headers = {}
+        if self.token and not self.allow_query_token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        base_url = self._resolve_owner_url() if self.follow_owner else self.base_url
+        ws = self._ws_class(self._url(base_url), headers=headers)
         ws.connect()
         with self._lock:
             self._ws = ws

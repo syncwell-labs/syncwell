@@ -52,7 +52,7 @@ has no persistent disk, so demo rooms reset on restart.
 Deploy by immutable image digest, never `latest`:
 
 ```text
-ghcr.io/nil-vaghani/syncwell@sha256:f37fc729237873b75c94824ba5503908800a98990fa35f30fcbf7314f5dbc1d2
+ghcr.io/syncwell-labs/syncwell@sha256:<published-digest>
 ```
 
 `SYNCWELL_DATA` is intentionally unset on the free plan (in-memory rooms). For a

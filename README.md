@@ -82,8 +82,8 @@ clustering) · `-cluster-peers` lists full-mesh replication peers.
 
 ```bash
 # offline backup / verify / restore (checksummed manifest):
-syncwell -data ./data -backup ./backup
-syncwell -verify-backup ./backup
+syncwell -data ./data -backup ./backup -backup-recipient age1...
+syncwell -verify-backup ./backup -restore-identity ./backup-identity.txt
 syncwell -restore ./backup -data ./data
 
 # issue a 24h token for a room:
@@ -121,7 +121,7 @@ docker compose run --rm syncwell -mint demo   # room token for the demo pages
 
 Once a release is tagged, prebuilt archives for Linux, macOS, and Windows
 (amd64/arm64) attach to each
-[release](https://github.com/Nil-Vaghani/syncwell/releases/latest)
+[release](https://github.com/syncwell-labs/syncwell/releases/latest)
 automatically, with `checksums.txt` and SPDX SBOMs (until then, build from
 source as above). Platform templates live in
 [`render.yaml`](render.yaml), [`docker-compose.yml`](docker-compose.yml), and

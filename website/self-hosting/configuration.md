@@ -3,7 +3,7 @@
 Every flag has an environment equivalent (`SYNCWELL_` + the flag name in
 SHOUTING_SNAKE_CASE) except the one-shot actions (`-mint*`, `-backup`,
 `-restore`, `-verify-backup`, `-ttl`, `-version`). The full table lives in
-[`docs/operations/DEPLOY.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/operations/DEPLOY.md).
+[`docs/operations/DEPLOY.md`](https://github.com/syncwell-labs/syncwell/blob/main/docs/operations/DEPLOY.md).
 
 ## Core
 
@@ -21,6 +21,9 @@ SHOUTING_SNAKE_CASE) except the one-shot actions (`-mint*`, `-backup`,
 | `SYNCWELL_TRUST_PROXY` | `-trust-proxy` | `false` |
 | `SYNCWELL_PROXY_HOPS` | `-proxy-hops` | `1` |
 | `SYNCWELL_NODE_ID` | `-node-id` | unset (single node; unique id required when clustering) |
+| `SYNCWELL_CLUSTER_MODE` | `-cluster-mode` | `relay` (`redis` is experimental) |
+| `SYNCWELL_REDIS_URL` | `-redis-url` | unset (required in Redis mode; TLS off loopback) |
+| `SYNCWELL_NODE_ADVERTISE` | `-node-advertise` | unset (`id=wss://host/ws`; repeat entries, required in Redis mode) |
 | `SYNCWELL_NODE_PEERS` | `-node-peers` | none |
 | `SYNCWELL_CLUSTER_PEERS` | `-cluster-peers` | single node (`https`) |
 | `SYNCWELL_CLUSTER_INSECURE` | `-cluster-insecure` | `false` |
@@ -50,6 +53,7 @@ fsyncs each append for power-loss safety at lower throughput.
 | Variable | Flag | Default |
 | --- | --- | --- |
 | `SYNCWELL_MAX_CLIENTS` | `-max-clients` | `256` (0 = unlimited) |
+| `SYNCWELL_MAX_CONNS` | `-max-conns` | `4096` per-process WebSocket connections (0 = unlimited) |
 | `SYNCWELL_MAX_ROOMS` | `-max-rooms` | `10000` (0 = unlimited) |
 | `SYNCWELL_MAX_MESSAGE_BYTES` | `-max-message-bytes` | `1048576` |
 | `SYNCWELL_MAX_VALUE_BYTES` | `-max-value-bytes` | `262144` |
@@ -63,6 +67,10 @@ fsyncs each append for power-loss safety at lower throughput.
 | `SYNCWELL_MAX_NODE_BYTES` | `-max-node-bytes` | server default |
 | `SYNCWELL_MAX_PRESENCE_BYTES` | `-max-presence-bytes` | server default |
 | `SYNCWELL_IDLE_ROOM_TTL` | `-idle-room-ttl` | `60s` (negative disables) |
+
+`-max-conns` limits WebSocket connections across the whole process; `-max-clients`
+limits connections in each room. When both are finite, the effective ceiling is
+the lower of `max-conns` and `max-rooms × max-clients`.
 
 ## Security
 
@@ -103,12 +111,12 @@ syncwell -secret "$SYNCWELL_SECRET" -mint my-room
 syncwell -secret "$SYNCWELL_SECRET" -mint "*" -mint-caps admin
 ```
 
-WebSocket clients can pass the token as `?token=`, but prefer an
-`Authorization: Bearer` header or the `syncwell.token.*` WebSocket subprotocol
-to keep credentials out of proxy logs. The JavaScript client opts into the
-subprotocol with `tokenTransport: "subprotocol"`. Operational endpoints accept
-`Authorization: Bearer`; a JWT with the `admin` capability also works when OIDC
-is enabled.
+WebSocket clients should pass tokens in `Authorization: Bearer` or the
+`syncwell.token.*` WebSocket subprotocol. The JavaScript SDK uses the
+subprotocol by default; Python uses the Authorization header. Both SDKs support
+query tokens only as an explicit legacy compatibility option. Operational
+endpoints accept `Authorization: Bearer`; a JWT with the `admin` capability
+also works when OIDC is enabled.
 
 Webhook destinations must be public `https` URLs; private, loopback, and
 metadata addresses are rejected (including redirects and DNS rebinding).

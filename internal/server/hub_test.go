@@ -24,6 +24,7 @@ func (failingStore) Append(string, store.Record) error {
 
 func (failingStore) Compact(string, map[string]crdt.Register) error { return nil }
 func (failingStore) Close() error                                   { return nil }
+func (failingStore) Delete(string) error                            { return nil }
 
 func serverReg(v string, c uint64, n string) crdt.Register {
 	b, _ := json.Marshal(v)
@@ -314,6 +315,7 @@ func (s *sizedStore) Compact(string, map[string]crdt.Register) error {
 	return nil
 }
 func (s *sizedStore) Close() error         { return nil }
+func (s *sizedStore) Delete(string) error  { return nil }
 func (s *sizedStore) LogSize(string) int64 { return s.size }
 
 func TestRoomCompactsWhenLogExceedsCap(t *testing.T) {

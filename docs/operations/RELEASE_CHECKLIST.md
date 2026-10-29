@@ -6,13 +6,13 @@ owner-facing path and the manual fallback.
 
 ## 0. Pre-flight (must be true)
 
-- [ ] `make all` is green locally (includes fmt, vet, race tests, coverage
+- [x] `make all` is green locally (includes fmt, vet, race tests, coverage
       floors, JS tests, e2e, persistence, restore drill, GC, chaos, build).
-- [ ] `make test-python` is green (polyglot client against the real server).
-- [ ] `make sdk-typecheck sdk-build` is green, and `cd clients/javascript && npm pack --dry-run`
+- [x] `make test-python` is green (polyglot client against the real server).
+- [x] `make sdk-typecheck sdk-build` is green, and `cd clients/javascript && npm pack --dry-run`
       lists `dist/`, all runtime `.js` files (map, text, awareness, storage),
       and the `.d.ts` files.
-- [ ] `make docs-build` is green.
+- [x] `make docs-build` is green.
 - [ ] Protocol contract tests pass; no v1 break without a v2 plan (see
       [`PROTOCOL_COMPATIBILITY.md`](../protocol/PROTOCOL_COMPATIBILITY.md)).
 - [ ] CI on `main` is green (including browser E2E, Python E2E, and container
@@ -24,6 +24,7 @@ owner-facing path and the manual fallback.
 
 ## 1. Versions
 
+- Planned release: engine tag `v0.5.0`; SDK version and tag `0.5.0` / `sdk-v0.5.0`.
 - [ ] Bump `clients/javascript/package.json` `version` when publishing the client.
 - [ ] Decide the engine tag (`vX.Y.Z`); `internal/version` is injected by
       GoReleaser and the Docker build, so no source edit is needed.
@@ -42,26 +43,30 @@ The `Release` workflow then:
 1. runs GoReleaser — linux/darwin/windows × amd64/arm64 archives,
    `checksums.txt`, SPDX SBOMs, and a GitHub release;
 2. builds and pushes the multi-arch image
-   `ghcr.io/nil-vaghani/syncwell:X.Y.Z` (plus `X.Y` and `sha-*`) with
+   `ghcr.io/syncwell-labs/syncwell:0.5.0` (plus `0.5` and `sha-*`) with
    provenance + SBOM attestations;
 3. signs the image digest with cosign using GitHub OIDC (keyless).
 
-Verify :
+Verify the signature, then verify the package is publicly pullable before
+changing the Render digest:
 
 ```bash
-cosign verify ghcr.io/nil-vaghani/syncwell:X.Y.Z \
-  --certificate-identity-regexp 'https://github.com/Nil-Vaghani/syncwell/.*' \
+cosign verify ghcr.io/syncwell-labs/syncwell:0.5.0 \
+  --certificate-identity-regexp 'https://github.com/syncwell-labs/syncwell/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-docker run --rm -p 8080:8080 ghcr.io/nil-vaghani/syncwell:X.Y.Z -version
+docker pull ghcr.io/syncwell-labs/syncwell:0.5.0
+docker run --rm -p 8080:8080 ghcr.io/syncwell-labs/syncwell:0.5.0 -version
 ```
 
-## 3. Publish the SDK (`sdk-vX.Y.Z`)
+Record the pushed image's immutable digest and use that digest in `render.yaml`.
+
+## 3. Publish the SDK (`sdk-v0.5.0`)
 
 The tag **must** match `clients/javascript/package.json` `version`; the workflow fails otherwise.
 
 ```bash
 cd clients/javascript && npm test && npm run typecheck && npm run build
-cd .. && git tag sdk-vX.Y.Z && git push origin sdk-vX.Y.Z
+cd .. && git tag sdk-v0.5.0 && git push origin sdk-v0.5.0
 ```
 
 The `Release SDK` workflow runs `npm ci`, tests, typechecks, builds, and

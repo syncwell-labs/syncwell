@@ -40,9 +40,10 @@ class MemoryStorage {
   }
 }
 
-test("constructor appends room and token without breaking existing query params", () => {
+test("constructor appends room and token (query mode) without breaking existing query params", () => {
   const sw = new Syncwell("ws://localhost:8080/ws?debug=1", "team/a", {
     token: "exp.sig",
+    tokenTransport: "query",
     WebSocket: FakeWebSocket,
   });
 
@@ -55,10 +56,9 @@ test("constructor appends room and token without breaking existing query params"
   sw.close();
 });
 
-test("subprotocol transport keeps the token out of the URL", () => {
+test("default subprotocol transport keeps the token out of the URL", () => {
   const sw = new Syncwell("ws://localhost:8080/ws", "team/a", {
     token: "exp.sig",
-    tokenTransport: "subprotocol",
     WebSocket: FakeWebSocket,
   });
 
@@ -67,6 +67,28 @@ test("subprotocol transport keeps the token out of the URL", () => {
   const url = new URL(FakeWebSocket.last.url);
   assert.equal(url.searchParams.get("token"), null);
   assert.deepEqual(FakeWebSocket.last.protocols, ["syncwell", "syncwell.token.exp.sig"]);
+  sw.close();
+});
+
+test("followOwner resolves the room route before opening the WebSocket", async () => {
+  let routeURL;
+  const sw = new Syncwell("ws://seed.example/ws", "room/one", {
+    followOwner: true,
+    token: "secret-token",
+    WebSocket: FakeWebSocket,
+    fetch: async (url) => {
+      routeURL = new URL(url);
+      return { ok: true, status: 200, json: async () => ({ node: "node-b", url: "wss://owner.example/ws" }) };
+    },
+  });
+  sw.connect();
+  await sw._routePromise;
+  assert.equal(routeURL.pathname, "/route");
+  assert.equal(routeURL.searchParams.get("room"), "room/one");
+  const wsURL = new URL(FakeWebSocket.last.url);
+  assert.equal(wsURL.host, "owner.example");
+  assert.equal(wsURL.searchParams.get("room"), "room/one");
+  assert.equal(wsURL.searchParams.has("token"), false);
   sw.close();
 });
 

@@ -78,7 +78,11 @@ export class Syncwell {
     this.baseURL = baseURL;
     this.room = room;
     this.token = opts.token;
-    this.tokenTransport = opts.tokenTransport === "subprotocol" ? "subprotocol" : "query";
+    this.tokenTransport = opts.tokenTransport !== "query" ? "subprotocol" : "query";
+    this.followOwner = opts.followOwner === true;
+    this.fetch = opts.fetch || (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : null);
+    this._routePromise = null;
+    this._routeGeneration = 0;
     this.url = buildURL(baseURL, room, opts.token, false, this.tokenTransport !== "subprotocol");
     this.clientId = opts.clientId || randomId();
     this.WS = opts.WebSocket || defaultWS();
@@ -155,9 +159,48 @@ export class Syncwell {
       this._reconnectTimer = null;
     }
     this._closed = false;
+    if (this.followOwner) {
+      if (!this.fetch) throw new SyncwellError("NO_FETCH", "followOwner requires fetch support");
+      if (this._routePromise) return this;
+      const generation = ++this._routeGeneration;
+      this._routePromise = this._resolveOwnerURL()
+        .then((url) => {
+          if (generation !== this._routeGeneration || this._closed) return;
+          this._routePromise = null;
+          this._connectSocket(url);
+        })
+        .catch((err) => {
+          if (generation !== this._routeGeneration || this._closed) return;
+          this._routePromise = null;
+          this._emitError("ROUTE_FAILED", "could not resolve room owner", err);
+          this._scheduleReconnect();
+        });
+      return this;
+    }
+    return this._connectSocket(this.baseURL);
+  }
+
+  async _resolveOwnerURL() {
+    const base = new URL(this.baseURL, typeof location !== "undefined" ? location.href : "http://syncwell.local");
+    const route = new URL(base.origin);
+    route.protocol = base.protocol === "wss:" ? "https:" : "http:";
+    route.pathname = "/route";
+    route.searchParams.set("room", this.room);
+    const response = await this.fetch(route.toString(), { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`route endpoint returned HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data || typeof data.url !== "string") throw new Error("route response has no WebSocket URL");
+    const ownerURL = new URL(data.url, route);
+    if (ownerURL.protocol !== "ws:" && ownerURL.protocol !== "wss:") throw new Error("route response URL must use ws or wss");
+    return ownerURL.toString();
+  }
+
+  _connectSocket(baseURL) {
+    if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) return this;
+    this._closed = false;
     this._ready = false;
     this._delta = this._deltaEnabled && Object.keys(this._vector()).length > 0;
-    this.url = buildURL(this.baseURL, this.room, this.token, this._delta, this.tokenTransport !== "subprotocol");
+    this.url = buildURL(baseURL, this.room, this.token, this._delta, this.tokenTransport !== "subprotocol");
     const protocols = this.tokenTransport === "subprotocol" && this.token
       ? ["syncwell", "syncwell.token." + this.token]
       : undefined;
@@ -207,6 +250,8 @@ export class Syncwell {
 
   close() {
     this._closed = true;
+    this._routeGeneration++;
+    this._routePromise = null;
     clearInterval(this._ackTimer);
     clearTimeout(this._reconnectTimer);
     clearTimeout(this._helloTimer);

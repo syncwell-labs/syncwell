@@ -34,18 +34,36 @@ func (h *histogram) observe(v float64) {
 }
 
 func (h *histogram) write(w io.Writer, name, help string) {
+	h.writeWithLabel(w, name, help, "", "")
+}
+
+func (h *histogram) writeWithLabel(w io.Writer, name, help, labelName, labelValue string) {
+	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
+	fmt.Fprintf(w, "# TYPE %s histogram\n", name)
+	h.writeSamplesWithLabel(w, name, labelName, labelValue)
+}
+
+func (h *histogram) writeSamplesWithLabel(w io.Writer, name, labelName, labelValue string) {
 	h.mu.Lock()
 	buckets := append([]float64(nil), h.buckets...)
 	counts := append([]uint64(nil), h.counts...)
 	sum, count := h.sum, h.count
 	h.mu.Unlock()
 
-	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
-	fmt.Fprintf(w, "# TYPE %s histogram\n", name)
 	for i, upper := range buckets {
-		fmt.Fprintf(w, "%s_bucket{le=%q} %d\n", name, strconv.FormatFloat(upper, 'g', -1, 64), counts[i])
+		if labelName == "" {
+			fmt.Fprintf(w, "%s_bucket{le=%q} %d\n", name, strconv.FormatFloat(upper, 'g', -1, 64), counts[i])
+		} else {
+			fmt.Fprintf(w, "%s_bucket{le=%q,%s=%q} %d\n", name, strconv.FormatFloat(upper, 'g', -1, 64), labelName, labelValue, counts[i])
+		}
 	}
-	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, count)
-	fmt.Fprintf(w, "%s_sum %s\n", name, strconv.FormatFloat(sum, 'g', -1, 64))
-	fmt.Fprintf(w, "%s_count %d\n", name, count)
+	if labelName == "" {
+		fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, count)
+		fmt.Fprintf(w, "%s_sum %s\n", name, strconv.FormatFloat(sum, 'g', -1, 64))
+		fmt.Fprintf(w, "%s_count %d\n", name, count)
+	} else {
+		fmt.Fprintf(w, "%s_bucket{le=\"+Inf\",%s=%q} %d\n", name, labelName, labelValue, count)
+		fmt.Fprintf(w, "%s_sum{%s=%q} %s\n", name, labelName, labelValue, strconv.FormatFloat(sum, 'g', -1, 64))
+		fmt.Fprintf(w, "%s_count{%s=%q} %d\n", name, labelName, labelValue, count)
+	}
 }

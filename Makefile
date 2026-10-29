@@ -5,7 +5,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X syncwell/internal/version.Version=$(VERSION) -X syncwell/internal/version.Commit=$(COMMIT) -X syncwell/internal/version.Date=$(BUILD_DATE)
 
-.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e browser-e2e-chromium browser-e2e-firefox a11y e2e persist restore-drill gc chaos bench vet fmt fmt-check clean docker container-smoke test-multi-client test-python help
+.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e browser-e2e-chromium browser-e2e-firefox a11y e2e persist restore-drill gc chaos bench vuln vet fmt fmt-check clean docker container-smoke test-multi-client test-python redis-e2e help
 
 help:
 	@echo "Syncwell make targets:"
@@ -24,8 +24,9 @@ help:
 	@echo "  gc               tombstone GC check"
 	@echo "  chaos            partition/reorder convergence"
 	@echo "  bench            latency/throughput benchmark"
+	@echo "  vuln             run govulncheck ./... when installed"
 	@echo "  loadtest-bin     build cmd/loadtest into bin/"
-	@echo "  browser-e2e      firefox + geckodriver demo walk"
+	@echo "  browser-e2e      kanban + Chromium + Firefox browser suites"
 	@echo "  browser-e2e-chromium  Brave/Chromium websocket auth + collab + reconnect"
 	@echo "  browser-e2e-firefox   Firefox WebDriver BiDi auth + collab + reconnect"
 	@echo "  a11y             axe-core WCAG scan: demos + built docs (chromedriver)"
@@ -82,8 +83,10 @@ docs-dev: docs-install
 	cd website && npm run dev
 
 # Browser E2E / accessibility smoke for the kanban demo.
-browser-e2e:
+browser-e2e: build
 	node tests/e2e/browser_kanban_e2e.mjs
+	node --test tests/e2e/browser_chromium_e2e.mjs
+	node --test tests/e2e/browser_firefox_e2e.mjs
 
 # Chromium/Brave E2E: websocket auth, collaboration, reconnect, console/network.
 browser-e2e-chromium:
@@ -117,6 +120,9 @@ restore-drill: build
 test-python: build
 	python3 -m unittest clients/python/test_client_e2e.py -v
 
+redis-e2e: build
+	NODE_TLS_REJECT_UNAUTHORIZED=0 node tests/e2e/redis_rehome.mjs
+
 # Tombstone-GC proof: churn deletes, verify tombstones are collected.
 gc: build
 	node tests/e2e/gc_e2e.mjs
@@ -128,6 +134,16 @@ chaos:
 # Latency/throughput benchmark; writes docs/product/BENCHMARKS.md.
 bench: build
 	node tests/bench/bench.mjs
+
+vuln:
+	@vulncheck_bin="$$(go env GOPATH)/bin/govulncheck"; \
+	if command -v govulncheck >/dev/null 2>&1; then \
+		govulncheck ./...; \
+	elif [ -x "$$vulncheck_bin" ]; then \
+		"$$vulncheck_bin" ./...; \
+	else \
+		echo "govulncheck is not installed. Install it with: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+	fi
 
 vet:
 	go vet ./...

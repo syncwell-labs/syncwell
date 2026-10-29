@@ -45,6 +45,73 @@ func TestAppendAndLoad(t *testing.T) {
 	}
 }
 
+func TestMetadataAndDelete(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append("room/name", Record{Key: "k", Reg: reg("v", 1, "n")}); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := s.RoomMetadata()
+	if err != nil || len(meta) != 1 || meta[0].Room != "room/name" {
+		t.Fatalf("metadata=%+v err=%v", meta, err)
+	}
+	path := s.metadataPath("room/name")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("metadata permissions = %o", info.Mode().Perm())
+	}
+	if err := s.Delete("room/name"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Load("room/name"); err != nil || len(got) != 0 {
+		t.Fatalf("Load after delete = %v, %v", got, err)
+	}
+	if err := s.Delete("room/name"); err != nil {
+		t.Fatalf("delete should be idempotent: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("metadata remains: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloseRoomKeepsLogAndUpdatesPersistenceStats(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Append("room", Record{Key: "k", Reg: reg("v", 1, "n")}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := s.Stats()
+	if err != nil || stats.OpenFiles != 1 || stats.OpenLogs != 1 || stats.Bytes == 0 {
+		t.Fatalf("open stats=%+v err=%v", stats, err)
+	}
+	if err := s.CloseRoom("room"); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = s.Stats()
+	if err != nil || stats.OpenFiles != 0 || stats.OpenLogs != 1 || stats.Bytes == 0 {
+		t.Fatalf("closed stats=%+v err=%v", stats, err)
+	}
+	if err := s.Append("room", Record{Key: "next", Reg: reg("v2", 2, "n")}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = s.Stats()
+	if err != nil || stats.OpenFiles != 1 {
+		t.Fatalf("reopened stats=%+v err=%v", stats, err)
+	}
+}
+
 func TestCompactPreservesState(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)

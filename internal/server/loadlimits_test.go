@@ -25,7 +25,8 @@ func (s *oversizedLoadStore) Compact(string, map[string]crdt.Register) error {
 	s.compactions++
 	return nil
 }
-func (s *oversizedLoadStore) Close() error { return nil }
+func (s *oversizedLoadStore) Close() error        { return nil }
+func (s *oversizedLoadStore) Delete(string) error { return nil }
 
 func TestLoadPersistedRejectsStateBeyondLimitsAndSkipsCompaction(t *testing.T) {
 	st := &oversizedLoadStore{}

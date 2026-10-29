@@ -80,7 +80,8 @@ func (m *memStore) Compact(room string, snap map[string]crdt.Register) error {
 	m.snap[room] = snap
 	return nil
 }
-func (m *memStore) Close() error { return nil }
+func (m *memStore) Close() error        { return nil }
+func (m *memStore) Delete(string) error { return nil }
 
 func TestWebhooksEmitRoomLifecycle(t *testing.T) {
 	sink, srv := newHookSink()

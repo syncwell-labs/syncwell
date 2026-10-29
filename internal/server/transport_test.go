@@ -26,6 +26,74 @@ func newTestHub() *Hub {
 	})
 }
 
+func TestServeWSGlobalConnectionLimit(t *testing.T) {
+	h := NewHub(Config{MaxConns: 1})
+	ts := httptest.NewServer(http.HandlerFunc(h.ServeWS))
+	defer ts.Close()
+	badHandshake := httptest.NewRecorder()
+	h.ServeWS(badHandshake, httptest.NewRequest(http.MethodGet, "/ws?room=bad-handshake", nil))
+	if badHandshake.Code != http.StatusBadRequest || h.connectionsCurrent.Load() != 0 {
+		t.Fatalf("failed upgrade status=%d left current connections=%d", badHandshake.Code, h.connectionsCurrent.Load())
+	}
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?room=budget"
+	first, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("first websocket dial: %v", err)
+	}
+	defer first.Close()
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("second websocket unexpectedly passed the global connection limit")
+	}
+	if resp == nil {
+		t.Fatalf("second dial error did not include an HTTP response: %v", err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") != "5" {
+		t.Fatalf("second dial response = %d Retry-After=%q; want 503 and 5", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	_ = resp.Body.Close()
+
+	if got := h.connectionsCurrent.Load(); got != 1 {
+		t.Fatalf("current connections after rejection = %d, want 1", got)
+	}
+
+	_ = first.Close()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && h.connectionsCurrent.Load() != 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if got := h.connectionsCurrent.Load(); got != 0 {
+		t.Fatalf("current connections after disconnect = %d, want 0", got)
+	}
+	if got := h.connectionRejects.Load(); got != 1 {
+		t.Fatalf("connection rejects = %d, want 1", got)
+	}
+
+	metrics := httptest.NewRecorder()
+	h.ServeMetrics(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, want := range []string{
+		"syncwell_connections_current 0",
+		"syncwell_connections_limit 1",
+		"syncwell_connection_rejects_total 1",
+	} {
+		if !strings.Contains(metrics.Body.String(), want) {
+			t.Errorf("metrics missing %q:\n%s", want, metrics.Body.String())
+		}
+	}
+}
+
+func TestServeWSGlobalConnectionLimitZeroIsUnlimited(t *testing.T) {
+	h := NewHub(Config{MaxConns: 0})
+	if !h.acquireConnection() || !h.acquireConnection() {
+		t.Fatal("zero MaxConns should allow unlimited connections")
+	}
+	h.connectionsCurrent.Add(-2)
+	if got := NewHub(Config{MaxConns: -1}).cfg.MaxConns; got != DefaultMaxConns {
+		t.Fatalf("negative MaxConns normalized to %d, want %d", got, DefaultMaxConns)
+	}
+}
+
 // TestServeWS_PingPong tests that the server sends periodic pings and accepts pongs.
 func TestServeWS_PingPong(t *testing.T) {
 	h := NewHub(Config{})

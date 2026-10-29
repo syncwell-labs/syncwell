@@ -2,14 +2,17 @@
 
 Syncwell uses one WebSocket per client and small JSON text frames. The normative
 v1 reference is
-[`docs/protocol/PROTOCOL.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/protocol/PROTOCOL.md);
+[`docs/protocol/PROTOCOL.md`](https://github.com/syncwell-labs/syncwell/blob/main/docs/protocol/PROTOCOL.md);
 this page is the fast orientation.
 
 ```text
-GET /ws?room=<ROOM_ID>[&token=<TOKEN>][&delta=1]
+GET /ws?room=<ROOM_ID>[&delta=1]
 ```
 
 `ROOM_ID` defaults to `default`. Frames may include `"protocol": 1`.
+Authenticate with `Authorization: Bearer <TOKEN>` or the
+`syncwell.token.<TOKEN>` WebSocket subprotocol. The legacy `token` query
+parameter remains supported, but SDKs require an explicit opt-in to use it.
 
 ## Registers
 

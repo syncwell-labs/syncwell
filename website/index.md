@@ -17,7 +17,7 @@ hero:
       link: /self-hosting/quickstart
     - theme: alt
       text: GitHub
-      link: https://github.com/Nil-Vaghani/syncwell
+      link: https://github.com/syncwell-labs/syncwell
 
 features:
   - title: Shared state and text
@@ -74,7 +74,7 @@ Read [Core concepts](/guide/concepts) for the model, or jump straight to the
 Syncwell is MIT-licensed and ships as one static binary with no database, cache,
 or message broker. You own the data and the deployment. Start with
 [operations](/self-hosting/operations) and the
-[threat model](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/operations/THREAT_MODEL.md).
+[threat model](https://github.com/syncwell-labs/syncwell/blob/main/docs/operations/THREAT_MODEL.md).
 
 ::: tip Status
 The engine and SDK are feature-complete through Phase 6. The Phase 7 docs site,

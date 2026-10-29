@@ -40,8 +40,29 @@ type Store interface {
 	// Compact rewrites a room's log to one line per current register, bounding
 	// file growth. Atomic: writes a temp file then renames.
 	Compact(room string, state map[string]crdt.Register) error
+	// Delete closes any open room log and removes its log plus metadata.
+	Delete(room string) error
 	// Close flushes and closes all open files.
 	Close() error
+}
+
+// RoomMetadata maps an opaque log filename back to its room and creation time.
+type RoomMetadata struct {
+	Room       string    `json:"room"`
+	Created    time.Time `json:"created"`
+	LogModTime time.Time `json:"log_mod_time"`
+}
+
+// Stats reports durable log inventory and currently open append handles.
+type Stats struct {
+	OpenFiles int
+	OpenLogs  int
+	Bytes     int64
+}
+
+type roomMetadataFile struct {
+	Room    string    `json:"room"`
+	Created time.Time `json:"created"`
 }
 
 // FsyncMode controls when appended records are forced to stable storage.
@@ -174,6 +195,93 @@ var legacyUnsafe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 func (s *FileStore) path(room string) string {
 	sum := sha256.Sum256([]byte(room))
 	return filepath.Join(s.dir, hex.EncodeToString(sum[:])+".log")
+}
+
+func (s *FileStore) metadataPath(room string) string {
+	return strings.TrimSuffix(s.path(room), ".log") + ".meta"
+}
+
+func (s *FileStore) ensureMetadataLocked(room string) error {
+	path := s.metadataPath(room)
+	data, err := os.ReadFile(path)
+	if err == nil {
+		var meta roomMetadataFile
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return fmt.Errorf("invalid room metadata %s: %w", path, err)
+		}
+		if meta.Room != room || meta.Created.IsZero() {
+			return fmt.Errorf("room metadata %s does not identify room %q", path, room)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	meta := roomMetadataFile{Room: room, Created: time.Now().UTC()}
+	data, err = json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(append(data, '\n')); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return syncDir(s.dir)
+}
+
+// RoomMetadata lists rooms with sidecar metadata and their current log mtime.
+// Legacy logs without metadata are omitted until their next append/compaction.
+func (s *FileStore) RoomMetadata() ([]RoomMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RoomMetadata, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var meta roomMetadataFile
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return nil, fmt.Errorf("invalid room metadata %s: %w", entry.Name(), err)
+		}
+		if meta.Room == "" || meta.Created.IsZero() || filepath.Base(s.metadataPath(meta.Room)) != entry.Name() {
+			return nil, fmt.Errorf("invalid room metadata mapping %s", entry.Name())
+		}
+		logInfo, err := os.Stat(s.path(meta.Room))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, RoomMetadata{Room: meta.Room, Created: meta.Created, LogModTime: logInfo.ModTime()})
+	}
+	return out, nil
 }
 
 // base64Path is the previous (v2) layout, retained for one-way migration.
@@ -378,6 +486,9 @@ func (s *FileStore) writer(room string) (*bufio.Writer, error) {
 func (s *FileStore) Append(room string, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureMetadataLocked(room); err != nil {
+		return err
+	}
 	w, err := s.writer(room)
 	if err != nil {
 		return err
@@ -416,6 +527,54 @@ func (s *FileStore) LogSize(room string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sizes[room]
+}
+
+// CloseRoom flushes and closes a room's append descriptor while retaining data.
+func (s *FileStore) CloseRoom(room string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w := s.bufs[room]; w != nil {
+		if err := w.Flush(); err != nil {
+			return err
+		}
+	}
+	f := s.files[room]
+	if f == nil {
+		return nil
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	delete(s.files, room)
+	delete(s.bufs, room)
+	delete(s.dirty, room)
+	return nil
+}
+
+// Stats returns current descriptors and on-disk log count/bytes.
+func (s *FileStore) Stats() (Stats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := Stats{OpenFiles: len(s.files)}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return stats, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return stats, err
+		}
+		stats.OpenLogs++
+		stats.Bytes += info.Size()
+	}
+	return stats, nil
 }
 
 func (s *FileStore) syncLoop() {
@@ -457,6 +616,9 @@ func (s *FileStore) Compact(room string, state map[string]crdt.Register) error {
 }
 
 func (s *FileStore) compactLocked(room string, state map[string]crdt.Register) error {
+	if err := s.ensureMetadataLocked(room); err != nil {
+		return err
+	}
 	dest := s.path(room)
 	tmp := dest + ".tmp"
 	if err := writeLog(tmp, state); err != nil {
@@ -484,6 +646,36 @@ func (s *FileStore) compactLocked(room string, state map[string]crdt.Register) e
 		delete(s.sizes, room)
 	}
 	return nil
+}
+
+// Delete removes a room's append handle, log, and metadata. It is safe to call
+// repeatedly for an already absent room.
+func (s *FileStore) Delete(room string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w := s.bufs[room]; w != nil {
+		if err := w.Flush(); err != nil {
+			return err
+		}
+	}
+	if f := s.files[room]; f != nil {
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	delete(s.files, room)
+	delete(s.bufs, room)
+	delete(s.sizes, room)
+	delete(s.dirty, room)
+	for _, path := range []string{s.path(room), s.metadataPath(room)} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return syncDir(s.dir)
 }
 
 func writeLog(path string, state map[string]crdt.Register) error {
@@ -543,7 +735,7 @@ func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
 	}
 	manifest := &BackupManifest{Format: 1, Created: time.Now().UTC()}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".log") && !strings.HasSuffix(entry.Name(), ".meta")) {
 			continue
 		}
 		bf, err := copyHashed(filepath.Join(dst, entry.Name()), filepath.Join(s.dir, entry.Name()))
@@ -587,7 +779,7 @@ func VerifyBackup(dir string) (*BackupManifest, error) {
 		return nil, fmt.Errorf("unsupported backup format %d", m.Format)
 	}
 	for _, bf := range m.Files {
-		if bf.Name == "" || filepath.Base(bf.Name) != bf.Name || !strings.HasSuffix(bf.Name, ".log") {
+		if bf.Name == "" || filepath.Base(bf.Name) != bf.Name || (!strings.HasSuffix(bf.Name, ".log") && !strings.HasSuffix(bf.Name, ".meta")) {
 			return nil, fmt.Errorf("unsafe backup entry %q", bf.Name)
 		}
 		path := filepath.Join(dir, bf.Name)
@@ -625,7 +817,7 @@ func Restore(src, dst string) (*BackupManifest, error) {
 		return nil, err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".log") && !strings.HasSuffix(entry.Name(), ".meta")) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(dst, entry.Name())); err != nil {

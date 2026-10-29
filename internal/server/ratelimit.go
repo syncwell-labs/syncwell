@@ -310,6 +310,7 @@ func (h *Hub) AdminHandler(next http.HandlerFunc) http.Handler {
 		next(rec, r)
 		switch {
 		case rec.status == http.StatusUnauthorized:
+			h.auditAdminFailure(r, ip)
 			h.adminLimiter.fail(ip)
 		case rec.status < http.StatusBadRequest:
 			h.adminLimiter.succeed(ip)

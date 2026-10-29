@@ -12,7 +12,7 @@ make build
 make loadtest-bin   # builds bin/loadtest from cmd/loadtest
 
 # terminal 1: in-memory single node
-./bin/syncwell -addr 127.0.0.1:8191
+./bin/syncwell -addr 127.0.0.1:8191 -max-conns 10000 -ws-rate -1
 
 # terminal 2
 ./bin/loadtest \
@@ -25,6 +25,12 @@ make loadtest-bin   # builds bin/loadtest from cmd/loadtest
 For a token-protected server add `-secret "$SYNCWELL_SECRET"`; the harness
 mints a room-scoped token per room. OIDC-only deployments need a token issued
 by the identity provider.
+
+`-ws-rate -1` disables the per-IP handshake rate limit for this isolated load
+test, where every client shares loopback's IP. Do not use this setting on a
+public production listener. The harness exits with an error if it cannot
+connect every requested client, so a partial run cannot be mistaken for a
+capacity result.
 
 ## Environment
 
@@ -67,6 +73,8 @@ by the identity provider.
 - No WAN latency, TLS, proxies, or persistence.
 - One node; clustering adds relay CPU and network.
 - 10k is the published target, not a hard cap. Raise `ulimit -n`, file
-  descriptors, and kernel socket buffers before trying more.
+  descriptors, and kernel socket buffers before trying more. Set the server's
+  `-max-conns` at least as high as the harness `-clients` count; `-max-clients`
+  remains a separate per-room limit (100 clients per room in this run).
 - The harness itself uses CPU and memory on the same host, so results are a
   lower bound on server capacity.

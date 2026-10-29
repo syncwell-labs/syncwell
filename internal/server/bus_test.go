@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,6 +15,24 @@ import (
 	"syncwell/internal/crdt"
 	"syncwell/internal/store"
 )
+
+func TestRelayPeerMetricsUseBoundedLabelsAndRecordLatency(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer peer.Close()
+	relay := NewHTTPClusterRelay([]string{peer.URL}, "", peer.Client())
+	relay.post(ClusterEvent{Room: "private-room-name", Kind: "op", From: "node"})
+	var out bytes.Buffer
+	relay.WritePeerMetrics(&out)
+	text := out.String()
+	if !strings.Contains(text, "syncwell_cluster_relay_duration_seconds_count{peer=") || !strings.Contains(text, "syncwell_cluster_relay_errors_total{peer=") || !strings.Contains(text, "reason=\"status\"") {
+		t.Fatalf("relay metrics missing bounded peer/error labels:\n%s", text)
+	}
+	if strings.Contains(text, "private-room-name") {
+		t.Fatal("relay metrics exposed a room id")
+	}
+}
 
 func TestMemoryClusterBusRelaysOpBetweenHubs(t *testing.T) {
 	bus := NewMemoryClusterBus()
@@ -166,6 +185,40 @@ func TestHTTPClusterRelayPostsWireEvent(t *testing.T) {
 	}
 }
 
+func TestHTTPClusterRelayDoesNotFollowRedirects(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var targetHits atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				targetHits.Add(1)
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			defer target.Close()
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", target.URL+"/cluster/event")
+				w.WriteHeader(status)
+			}))
+			defer peer.Close()
+
+			relay := NewHTTPClusterRelay([]string{peer.URL}, "/cluster/event", nil)
+			relay.Publish(ClusterEvent{Room: "redirect-check", Kind: "presence", From: "node-a"})
+
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				_, _, errs, _ := relay.Metrics()
+				if errs > 0 {
+					if hits := targetHits.Load(); hits != 0 {
+						t.Fatalf("redirect target received %d request(s)", hits)
+					}
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+			t.Fatal("redirect response was not counted as a relay error")
+		})
+	}
+}
+
 func TestServeClusterEventPublishesToLocalBus(t *testing.T) {
 	bus := NewMemoryClusterBus()
 	h := NewHub(Config{Bus: bus})
@@ -228,6 +281,7 @@ func (s *recordingStore) Append(_ string, rec store.Record) error {
 
 func (s *recordingStore) Compact(string, map[string]crdt.Register) error { return nil }
 func (s *recordingStore) Close() error                                   { return nil }
+func (s *recordingStore) Delete(string) error                            { return nil }
 
 func TestClusterOpIsPersistedOnReceiver(t *testing.T) {
 	bus := NewMemoryClusterBus()
@@ -266,7 +320,11 @@ func TestClusterConfigValidate(t *testing.T) {
 		{"cluster with secret but no admin token", Config{NodeID: "a", Secret: "s", ClusterPeers: []string{"http://peer"}}, true},
 		{"cluster valid", Config{NodeID: "a", AdminToken: "t", ClusterAllowHTTP: true, ClusterPeers: []string{"http://peer"}}, false},
 		{"cluster plaintext http", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"http://peer"}}, true},
-		{"cluster loopback http", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"http://127.0.0.1:8080"}}, false},
+		{"cluster loopback http requires opt-in", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"http://127.0.0.1:8080"}}, true},
+		{"cluster path rejected", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"https://peer.example/path"}}, true},
+		{"cluster query rejected", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"https://peer.example?x=1"}}, true},
+		{"cluster fragment rejected", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"https://peer.example#fragment"}}, true},
+		{"cluster credentials rejected", Config{NodeID: "a", AdminToken: "t", ClusterPeers: []string{"https://user:pass@peer.example"}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

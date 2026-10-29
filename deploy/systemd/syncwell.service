@@ -11,7 +11,7 @@
 # without /etc/syncwell.env and room authentication (via -require-auth).
 [Unit]
 Description=Syncwell real-time collaboration engine
-Documentation=https://github.com/Nil-Vaghani/syncwell
+Documentation=https://github.com/syncwell-labs/syncwell
 After=network-online.target
 Wants=network-online.target
 

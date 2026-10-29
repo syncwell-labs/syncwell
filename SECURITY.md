@@ -10,7 +10,7 @@ you need reproducible deployments.
 
 **Do not open a public issue.** Report privately via GitHub Security Advisories:
 
-https://github.com/Nil-Vaghani/syncwell/security/advisories/new
+https://github.com/syncwell-labs/syncwell/security/advisories/new
 
 Please include:
 
