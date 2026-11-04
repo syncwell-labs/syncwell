@@ -6,13 +6,20 @@ owner-facing path and the manual fallback.
 
 ## 0. Pre-flight (must be true)
 
-- [x] `make all` is green locally (includes fmt, vet, race tests, coverage
-      floors, JS tests, e2e, persistence, restore drill, GC, chaos, build).
+- [x] `make all` is green locally (includes workflow validation, fmt, vet, race
+      tests, coverage floors, JS tests, e2e, persistence, restore drill, GC,
+      chaos, build).
 - [x] `make test-python` is green (polyglot client against the real server).
 - [x] `make sdk-typecheck sdk-build` is green, and `cd clients/javascript && npm pack --dry-run`
       lists `dist/`, all runtime `.js` files (map, text, awareness, storage),
       and the `.d.ts` files.
 - [x] `make docs-build` is green.
+- [x] `make workflows` is green (YAML parse, every action SHA-pinned, exact Go
+      toolchains, no `check-latest`).
+- [ ] `make release-dry-run` is green; it cross-builds the release matrix and
+      writes checksums under `dist/release-dry-run/` (or `tmp/`). Optional
+      GoReleaser/Syft/cosign steps report as skipped when those tools are not
+      installed; set `RELEASE_DRY_RUN_STRICT=1` to require them.
 - [ ] Protocol contract tests pass; no v1 break without a v2 plan (see
       [`PROTOCOL_COMPATIBILITY.md`](../protocol/PROTOCOL_COMPATIBILITY.md)).
 - [ ] CI on `main` is green (including browser E2E, Python E2E, and container
@@ -32,6 +39,16 @@ owner-facing path and the manual fallback.
       draft if needed).
 
 ## 2. Tag the engine (`vX.Y.Z`)
+
+Rehearse locally first; this validates config and artifacts without publishing
+or signing anything:
+
+```bash
+make workflows
+make release-dry-run
+```
+
+Then tag the engine:
 
 ```bash
 git tag vX.Y.Z

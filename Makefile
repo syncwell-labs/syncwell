@@ -5,11 +5,11 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X syncwell/internal/version.Version=$(VERSION) -X syncwell/internal/version.Commit=$(COMMIT) -X syncwell/internal/version.Date=$(BUILD_DATE)
 
-.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e browser-e2e-chromium browser-e2e-firefox a11y e2e persist restore-drill gc chaos bench vuln vet fmt fmt-check clean docker container-smoke test-multi-client test-python redis-e2e help
+.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e browser-e2e-chromium browser-e2e-firefox a11y e2e persist restore-drill gc chaos bench vuln vet fmt fmt-check clean docker container-smoke test-multi-client test-python redis-e2e workflows release-dry-run redis-drill soak soak-quick help
 
 help:
 	@echo "Syncwell make targets:"
-	@echo "  all              fmt-check + vet + test + cover-check + JS tests + e2e + persist + restore-drill + gc + multi-client + chaos + build"
+	@echo "  all              workflows + fmt-check + vet + test + cover-check + JS tests + e2e + persist + restore-drill + gc + multi-client + chaos + build"
 	@echo "  build            compile bin/syncwell"
 	@echo "  run              go run the server (loopback demo at http://localhost:8080; ADDR=... to override)"
 	@echo "  test             go test -race ./..."
@@ -26,6 +26,11 @@ help:
 	@echo "  bench            latency/throughput benchmark"
 	@echo "  vuln             run govulncheck ./... when installed"
 	@echo "  loadtest-bin     build cmd/loadtest into bin/"
+	@echo "  workflows        validate workflow YAML, action pins, and release config (offline)"
+	@echo "  release-dry-run  cross-build release matrix + checksums + optional SBOM (no publish)"
+	@echo "  redis-drill      local 3-node Redis SIGKILL/re-home + relay rollback evidence"
+	@echo "  soak             local 2000-client bench + 10m loadtest artifacts (SOAK_PORT=...)"
+	@echo "  soak-quick       short soak smoke (200 clients, 30s) to validate the harness"
 	@echo "  browser-e2e      kanban + Chromium + Firefox browser suites"
 	@echo "  browser-e2e-chromium  Brave/Chromium websocket auth + collab + reconnect"
 	@echo "  browser-e2e-firefox   Firefox WebDriver BiDi auth + collab + reconnect"
@@ -35,7 +40,7 @@ help:
 	@echo "  container-smoke  run container + curl /healthz"
 	@echo "  vet / fmt / fmt-check / clean"
 
-all: fmt-check vet test cover-check test-js e2e persist restore-drill gc test-multi-client chaos build
+all: workflows fmt-check vet test cover-check test-js e2e persist restore-drill gc test-multi-client chaos build
 
 build:
 	@mkdir -p bin
@@ -122,6 +127,26 @@ test-python: build
 
 redis-e2e: build
 	NODE_TLS_REJECT_UNAUTHORIZED=0 node tests/e2e/redis_rehome.mjs
+
+# Offline release-config gate: YAML parse, SHA-pinned actions, exact Go toolchain.
+workflows:
+	@./scripts/check-workflows.sh
+
+# Local release rehearsal. Never publishes or signs; see RELEASE_CHECKLIST.md.
+release-dry-run:
+	@./scripts/release-dry-run.sh
+
+# Local Redis three-node SIGKILL/re-home drill with RPO/RTO artifacts.
+redis-drill:
+	@./scripts/redis-recovery-drill.sh
+
+# Local counterpart of the nightly soak job (bench + long loadtest artifacts).
+soak:
+	@./scripts/soak.sh
+
+# Short soak smoke so the harness can be validated without a 20-minute run.
+soak-quick:
+	@CLIENTS=200 MAX_CLIENTS=256 DURATION_MS=30000 LOADTEST_CLIENTS=200 ROOMS=10 LOADTEST_DURATION=30s ./scripts/soak.sh
 
 # Tombstone-GC proof: churn deletes, verify tombstones are collected.
 gc: build

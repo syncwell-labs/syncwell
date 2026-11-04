@@ -276,6 +276,11 @@ not tens. An experimental Redis ownership mode is documented in
 [`website/self-hosting/clustering.md`](../../website/self-hosting/clustering.md)
 and [`ADR-001`](../adr/ADR-001-cluster-transport.md). It is not production-
 supported until provider failover fencing and three-node SIGKILL validation pass.
+`make redis-drill` runs that three-node SIGKILL/re-home drill locally (starting
+a throwaway AOF Redis when `SYNCWELL_REDIS_URL` is unset) and writes the
+acknowledged-write RPO and recovery-time RTO to
+`dist/redis-drill/<timestamp>/report.md` (or `tmp/`). It proves the lease path
+but does not replace provider fencing or the maintainer acceptance run.
 
 Cluster metrics on `/metrics`: `syncwell_cluster_events_ingested_total`,
 `..._dropped_total`, `syncwell_cluster_relay_{posts,errors,dropped}_total`,

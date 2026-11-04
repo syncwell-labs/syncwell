@@ -32,6 +32,25 @@ public production listener. The harness exits with an error if it cannot
 connect every requested client, so a partial run cannot be mistaken for a
 capacity result.
 
+## Local soak artifacts
+
+`make soak` is the local counterpart of `.github/workflows/soak.yml`. It runs
+the benchmark and a long loadtest against one real server, then writes the
+reviewable bundle:
+
+```bash
+make soak-quick   # 200 clients, 30 s bench + 30 s loadtest (harness smoke)
+make soak         # 2000 clients, 10 min bench + 10 min loadtest
+```
+
+Artifacts land in `dist/soak/<timestamp>/` (or `tmp/soak/<timestamp>/` when
+`dist/` is not writable): `soak-bench.md`, `soak-loadtest.txt`,
+`soak-server.log`, `meta.json`, and `report.md`. Override the workload with
+`CLIENTS`, `MAX_CLIENTS`, `DURATION_MS`, `INTERVAL_MS`, `LOADTEST_CLIENTS`,
+`ROOMS`, `LOADTEST_DURATION`, `WARMUP`, `LOADTEST_INTERVAL`, `SOAK_PORT`, or
+`SOAK_OUT`. This is still a single-host run; attach it next to, not instead of,
+the dedicated-runner nightly artifact.
+
 ## Environment
 
 | Item | Value |
