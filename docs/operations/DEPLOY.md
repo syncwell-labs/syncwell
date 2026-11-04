@@ -101,12 +101,15 @@ Binding a non-loopback address (`:8080`, `0.0.0.0`, a container) without
 them **once** to stderr in a copy-now banner (the structured log records only a
 fingerprint: `auth_secret_generated`, `admin_token_generated`).
 They are not persisted, so set `SYNCWELL_SECRET`/`SYNCWELL_ADMIN_TOKEN` for
-stable credentials. Mint room tokens with the same secret and pass them to the
-client (the demo pages accept `?token=`; `?room=` must name the same room):
+stable credentials. Mint room tokens with the same secret. For SDK clients,
+pass the token as the SDK's `token` option; JavaScript uses the WebSocket
+subprotocol and Python uses an Authorization header by default. The bundled
+browser demo's `?room=...&token=...` URL is a demo-only convention:
 
 ```bash
 syncwell -secret "$SYNCWELL_SECRET" -mint demo
-# open https://HOST/?room=demo&token=<token>
+# Demo-only bundled-page URL; application SDKs should not put tokens in URLs:
+# https://HOST/?room=demo&token=<token>
 ```
 
 `-insecure` / `SYNCWELL_INSECURE=1` opts out of that enforcement: a public
@@ -152,7 +155,8 @@ syncwell \
   with `-oidc-jwks https://idp.example/jwks`.
 - Clients pass the JWT exactly like a room token: preferably
   `Authorization: Bearer` or `Sec-WebSocket-Protocol: syncwell.token.<jwt>`,
-  with `?token=` retained for older browser clients. Admin endpoints accept
+  with `?token=` retained only as an explicit compatibility path for older SDKs.
+  The bundled demo page's query-token URL is demo-only. Admin endpoints accept
   `Authorization: Bearer` only.
 - `syncwell_room` must equal the requested room. A `*` room claim is treated
   as an admin-only credential: it works for admin endpoints

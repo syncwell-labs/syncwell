@@ -25,8 +25,10 @@ Open any demo:
 A public bind (`:8080`, Docker, or a platform `PORT`) generates a room secret and
 admin token on first start and prints them once to stderr. The **secret** is the
 server's signing key; a **room token** is the signed, expiring pass it produces
-for one room — clients join with `?token=...`. (On the loopback bind above there
-is no secret, so no token is needed at all.) For stable credentials:
+for one room. Pass it as the SDK's `token` option: JavaScript uses the
+WebSocket subprotocol and Python uses an Authorization header by default, so
+the token stays out of the URL. (On the loopback bind above there is no secret,
+so no token is needed at all.) For stable credentials:
 
 ```bash
 export SYNCWELL_SECRET=$(openssl rand -hex 32)
@@ -39,7 +41,8 @@ Mint a room token when `-secret` is set:
 
 ```bash
 ./bin/syncwell -secret "$SYNCWELL_SECRET" -mint demo
-# open http://localhost:8080/?room=demo&token=<token>
+# Demo-only URL for the bundled browser demo (not an SDK connection):
+# http://localhost:8080/?room=demo&token=<token>
 ```
 
 ## 2. Install the client
@@ -60,6 +63,8 @@ or copy the `clients/javascript/` directory into your project; the API is identi
 import { Syncwell } from "/sdk/syncwell.js";
 
 const sw = new Syncwell("ws://localhost:8080/ws", "my-room", {
+  // Optional on authenticated servers; sent outside the URL by default.
+  // token: "<room-token>",
   clientId: "user-42",
   persist: true, // localStorage (IndexedDB/file adapters also available)
 });

@@ -29,7 +29,8 @@ cp .env.example .env
 # fill SYNCWELL_SECRET and SYNCWELL_ADMIN_TOKEN (openssl rand -hex 32)
 docker compose up -d --build
 docker compose run --rm syncwell -mint demo   # room token for the demo pages
-# open http://localhost:8080/?room=demo&token=<token>
+# Demo-only bundled-page URL (do not use this token carrier in SDK clients):
+# http://localhost:8080/?room=demo&token=<token>
 ```
 
 ## Binary or Go

@@ -88,6 +88,7 @@ the lower of `max-conns` and `max-rooms × max-clients`.
 | `SYNCWELL_OIDC_REFRESH` | `-oidc-refresh` | `15m` |
 | `SYNCWELL_REVOKED_JTIS` | `-revoked-jtis` | none |
 | `SYNCWELL_TLS_CERT` / `_KEY` | `-tls-cert` / `-tls-key` | none (plain HTTP; terminate TLS at a proxy) |
+| `SYNCWELL_TLS_MIN` | `-tls-min` | `1.3` (`1.2` is an explicit compatibility opt-in) |
 
 ## Webhooks and tracing
 
