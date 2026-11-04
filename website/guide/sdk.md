@@ -24,6 +24,7 @@ const sw = new Syncwell<{ title: string; done: boolean }>(
     storage,               // or a custom adapter
     storageKey: "my-app:room-1",
     delta: true,           // state-vector reconnect (default)
+    followOwner: true,     // resolve /route before connect/reconnect (default false)
     historyLimit: 100,     // undo groups kept in memory
     WebSocket,             // inject in Node < 22 or tests
     maxReconnectDelay: 8000,

@@ -80,17 +80,19 @@ func (m *memStore) Compact(room string, snap map[string]crdt.Register) error {
 	m.snap[room] = snap
 	return nil
 }
-func (m *memStore) Close() error { return nil }
+func (m *memStore) Close() error        { return nil }
+func (m *memStore) Delete(string) error { return nil }
 
 func TestWebhooksEmitRoomLifecycle(t *testing.T) {
 	sink, srv := newHookSink()
 	defer srv.Close()
 
 	hub := NewHub(Config{
-		Store:         &memStore{},
-		CompactEvery:  1,
-		WebhookURLs:   []string{srv.URL},
-		WebhookSecret: "whsec",
+		Store:               &memStore{},
+		CompactEvery:        1,
+		WebhookURLs:         []string{srv.URL},
+		WebhookSecret:       "whsec",
+		WebhookAllowPrivate: true,
 	})
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -141,8 +143,9 @@ func TestWebhookSignatureTimestamped(t *testing.T) {
 	defer srv.Close()
 
 	d := NewWebhookDispatcher(WebhookConfig{
-		URLs:   []string{srv.URL},
-		Secret: secret,
+		URLs:         []string{srv.URL},
+		Secret:       secret,
+		AllowPrivate: true,
 	})
 	defer d.Close(context.Background())
 	d.Emit("room.created", "r1", "local", nil)

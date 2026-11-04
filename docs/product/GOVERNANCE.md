@@ -12,9 +12,9 @@ keep the engine small and correct rather than maximize contribution volume.
 | Reviewer | Reviews protocol, CRDT, storage, and security changes; may be a maintainer |
 | Contributor | Files issues, proposes designs, and opens pull requests |
 
-The current maintainer is [@Nil-Vaghani](https://github.com/Nil-Vaghani). The
-list of people with merge or release rights is the repository's collaborator
-list; there is no separate private council.
+The current maintainer team is Syncwell Labs. The list of people with merge or
+release rights is the repository's collaborator list; there is no separate
+private council.
 
 ## Decision making
 

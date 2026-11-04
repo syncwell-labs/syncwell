@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,8 +40,29 @@ type Store interface {
 	// Compact rewrites a room's log to one line per current register, bounding
 	// file growth. Atomic: writes a temp file then renames.
 	Compact(room string, state map[string]crdt.Register) error
+	// Delete closes any open room log and removes its log plus metadata.
+	Delete(room string) error
 	// Close flushes and closes all open files.
 	Close() error
+}
+
+// RoomMetadata maps an opaque log filename back to its room and creation time.
+type RoomMetadata struct {
+	Room       string    `json:"room"`
+	Created    time.Time `json:"created"`
+	LogModTime time.Time `json:"log_mod_time"`
+}
+
+// Stats reports durable log inventory and currently open append handles.
+type Stats struct {
+	OpenFiles int
+	OpenLogs  int
+	Bytes     int64
+}
+
+type roomMetadataFile struct {
+	Room    string    `json:"room"`
+	Created time.Time `json:"created"`
 }
 
 // FsyncMode controls when appended records are forced to stable storage.
@@ -86,8 +108,9 @@ func ParseFsyncMode(s string) (FsyncMode, error) {
 
 // Options configures a FileStore.
 type Options struct {
-	Fsync        FsyncMode
-	SyncInterval time.Duration // batch mode interval; <=0 = 5ms
+	Fsync           FsyncMode
+	SyncInterval    time.Duration // batch mode interval; <=0 = 5ms
+	MigrateLegacyV1 bool          // explicitly allow importing the ambiguous v1 sanitized filename layout
 }
 
 func (o Options) withDefaults() Options {
@@ -117,9 +140,10 @@ type BackupManifest struct {
 
 // FileStore is the default on-disk Store.
 type FileStore struct {
-	dir          string
-	fsync        FsyncMode
-	syncInterval time.Duration
+	dir             string
+	fsync           FsyncMode
+	syncInterval    time.Duration
+	migrateLegacyV1 bool
 
 	mu    sync.Mutex
 	files map[string]*os.File
@@ -145,15 +169,16 @@ func OpenWithOptions(dir string, opts Options) (*FileStore, error) {
 	}
 	opts = opts.withDefaults()
 	s := &FileStore{
-		dir:          dir,
-		fsync:        opts.Fsync,
-		syncInterval: opts.SyncInterval,
-		files:        map[string]*os.File{},
-		bufs:         map[string]*bufio.Writer{},
-		sizes:        map[string]int64{},
-		dirty:        map[string]struct{}{},
-		stop:         make(chan struct{}),
-		done:         make(chan struct{}),
+		dir:             dir,
+		fsync:           opts.Fsync,
+		syncInterval:    opts.SyncInterval,
+		migrateLegacyV1: opts.MigrateLegacyV1,
+		files:           map[string]*os.File{},
+		bufs:            map[string]*bufio.Writer{},
+		sizes:           map[string]int64{},
+		dirty:           map[string]struct{}{},
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 	go s.syncLoop()
 	return s, nil
@@ -172,6 +197,93 @@ func (s *FileStore) path(room string) string {
 	return filepath.Join(s.dir, hex.EncodeToString(sum[:])+".log")
 }
 
+func (s *FileStore) metadataPath(room string) string {
+	return strings.TrimSuffix(s.path(room), ".log") + ".meta"
+}
+
+func (s *FileStore) ensureMetadataLocked(room string) error {
+	path := s.metadataPath(room)
+	data, err := os.ReadFile(path)
+	if err == nil {
+		var meta roomMetadataFile
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return fmt.Errorf("invalid room metadata %s: %w", path, err)
+		}
+		if meta.Room != room || meta.Created.IsZero() {
+			return fmt.Errorf("room metadata %s does not identify room %q", path, room)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	meta := roomMetadataFile{Room: room, Created: time.Now().UTC()}
+	data, err = json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(append(data, '\n')); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return syncDir(s.dir)
+}
+
+// RoomMetadata lists rooms with sidecar metadata and their current log mtime.
+// Legacy logs without metadata are omitted until their next append/compaction.
+func (s *FileStore) RoomMetadata() ([]RoomMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RoomMetadata, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var meta roomMetadataFile
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return nil, fmt.Errorf("invalid room metadata %s: %w", entry.Name(), err)
+		}
+		if meta.Room == "" || meta.Created.IsZero() || filepath.Base(s.metadataPath(meta.Room)) != entry.Name() {
+			return nil, fmt.Errorf("invalid room metadata mapping %s", entry.Name())
+		}
+		logInfo, err := os.Stat(s.path(meta.Room))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, RoomMetadata{Room: meta.Room, Created: meta.Created, LogModTime: logInfo.ModTime()})
+	}
+	return out, nil
+}
+
 // base64Path is the previous (v2) layout, retained for one-way migration.
 func (s *FileStore) base64Path(room string) string {
 	return filepath.Join(s.dir, base64.RawURLEncoding.EncodeToString([]byte(room))+".log")
@@ -181,13 +293,51 @@ func (s *FileStore) legacyPath(room string) string {
 	return filepath.Join(s.dir, legacyUnsafe.ReplaceAllString(room, "_")+".log")
 }
 
+// LoadLimits bounds the state accepted from disk. A zero field is unlimited,
+// except that a zero value for all fields retains the historical 16 MiB line
+// cap. Limits are enforced while replaying so a corrupt or tampered log cannot
+// force unbounded memory use before the room notices.
+type LoadLimits struct {
+	MaxEntries    int
+	MaxBytes      int64
+	MaxKeyBytes   int
+	MaxValueBytes int
+	MaxNodeBytes  int
+}
+
+func (l LoadLimits) maxLineBytes() int {
+	const fallback = 16 * 1024 * 1024
+	if l.MaxKeyBytes <= 0 && l.MaxValueBytes <= 0 && l.MaxNodeBytes <= 0 {
+		return fallback
+	}
+	// JSON string escaping can expand a raw byte to six bytes.
+	n := 6*(l.MaxKeyBytes+l.MaxValueBytes+l.MaxNodeBytes) + 64*1024
+	if n < 64*1024 {
+		n = 64 * 1024
+	}
+	if n > fallback {
+		return fallback
+	}
+	return n
+}
+
 // Load replays the op-log through a fresh CRDT and returns its snapshot. A torn
 // final line (from a crash mid-write) is skipped rather than failing the load.
 func (s *FileStore) Load(room string) (map[string]crdt.Register, error) {
+	return s.LoadWithLimits(room, LoadLimits{})
+}
+
+// LoadWithLimits is Load with explicit bounds on the accepted document. A state
+// that exceeds the configured room budget is rejected instead of being adopted
+// and immediately compacted over the original log.
+func (s *FileStore) LoadWithLimits(room string, limits LoadLimits) (map[string]crdt.Register, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadWithLimitsLocked(room, limits)
+}
 
-	snap, found, err := s.loadPath(s.path(room))
+func (s *FileStore) loadWithLimitsLocked(room string, limits LoadLimits) (map[string]crdt.Register, error) {
+	snap, found, err := s.loadPath(s.path(room), limits)
 	if err != nil || found {
 		if err == nil && found {
 			s.rememberSize(room)
@@ -195,28 +345,45 @@ func (s *FileStore) Load(room string) (map[string]crdt.Register, error) {
 		return snap, err
 	}
 
-	// One-way migration from the two earlier layouts. The base64 name was
-	// injective but could exceed NAME_MAX; the legacy sanitised name was not
-	// injective. Compact into the hashed layout before returning so future
-	// writes never touch the old file.
-	for _, alt := range []string{s.base64Path(room), s.legacyPath(room)} {
-		if alt == s.path(room) {
-			continue
+	// One-way migration from the base64 layout. That filename was injective,
+	// so it is safe to import automatically.
+	if alt := s.base64Path(room); alt != s.path(room) {
+		if _, statErr := os.Stat(alt); statErr == nil {
+			snap, found, err = s.loadPath(alt, limits)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				if err := s.compactLocked(room, snap); err != nil {
+					return nil, err
+				}
+				return snap, nil
+			}
 		}
-		if _, statErr := os.Stat(alt); statErr != nil {
-			continue
+	}
+
+	// The v1 sanitized layout was not injective ("a/b" and "a_b" both became
+	// "a_b.log"). Importing it automatically can silently attach one room's
+	// history to another, so it is opt-in and still rejected for unsafe ids.
+	if alt := s.legacyPath(room); alt != s.path(room) {
+		if _, statErr := os.Stat(alt); statErr == nil {
+			if legacyUnsafe.MatchString(room) {
+				return nil, fmt.Errorf("legacy room file %s cannot be safely attributed to room %q; re-import it manually", alt, room)
+			}
+			if !s.migrateLegacyV1 {
+				return nil, fmt.Errorf("legacy room file %s requires -migrate-legacy-v1 (SYNCWELL_MIGRATE_LEGACY_V1) after verifying that the id is unambiguous", alt)
+			}
+			snap, found, err = s.loadPath(alt, limits)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				if err := s.compactLocked(room, snap); err != nil {
+					return nil, err
+				}
+				return snap, nil
+			}
 		}
-		snap, found, err = s.loadPath(alt)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			continue
-		}
-		if err := s.compactLocked(room, snap); err != nil {
-			return nil, err
-		}
-		return snap, nil
 	}
 	return map[string]crdt.Register{}, nil
 }
@@ -227,7 +394,7 @@ func (s *FileStore) rememberSize(room string) {
 	}
 }
 
-func (s *FileStore) loadPath(path string) (map[string]crdt.Register, bool, error) {
+func (s *FileStore) loadPath(path string, limits LoadLimits) (map[string]crdt.Register, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -239,7 +406,7 @@ func (s *FileStore) loadPath(path string) (map[string]crdt.Register, bool, error
 
 	doc := crdt.NewLWWMap()
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), limits.maxLineBytes())
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -255,12 +422,39 @@ func (s *FileStore) loadPath(path string) (map[string]crdt.Register, bool, error
 			}
 			break
 		}
+		if err := validateLoadedRecord(rec, limits); err != nil {
+			return nil, true, fmt.Errorf("op-log %s: %w", path, err)
+		}
 		doc.ApplyRegister(rec.Key, rec.Reg)
+		if entries, bytes := doc.Size(); (limits.MaxEntries > 0 && entries > limits.MaxEntries) ||
+			(limits.MaxBytes > 0 && bytes > limits.MaxBytes) {
+			return nil, true, fmt.Errorf("op-log %s exceeds the configured room limits (%d registers, %d bytes)", path, entries, bytes)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, true, err
 	}
 	return doc.Snapshot(), true, nil
+}
+
+func validateLoadedRecord(rec Record, limits LoadLimits) error {
+	if rec.Key == "" || (limits.MaxKeyBytes > 0 && len(rec.Key) > limits.MaxKeyBytes) {
+		return errors.New("invalid key in persisted record")
+	}
+	if rec.Reg.TS.Node == "" || (limits.MaxNodeBytes > 0 && len(rec.Reg.TS.Node) > limits.MaxNodeBytes) {
+		return errors.New("invalid node id in persisted record")
+	}
+	if rec.Reg.Deleted {
+		if len(rec.Reg.Value) > 0 {
+			return errors.New("tombstone carries a value")
+		}
+		return nil
+	}
+	if len(rec.Reg.Value) == 0 || !json.Valid(rec.Reg.Value) ||
+		(limits.MaxValueBytes > 0 && len(rec.Reg.Value) > limits.MaxValueBytes) {
+		return errors.New("invalid value in persisted record")
+	}
+	return nil
 }
 
 func (s *FileStore) writer(room string) (*bufio.Writer, error) {
@@ -292,6 +486,9 @@ func (s *FileStore) writer(room string) (*bufio.Writer, error) {
 func (s *FileStore) Append(room string, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureMetadataLocked(room); err != nil {
+		return err
+	}
 	w, err := s.writer(room)
 	if err != nil {
 		return err
@@ -330,6 +527,54 @@ func (s *FileStore) LogSize(room string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sizes[room]
+}
+
+// CloseRoom flushes and closes a room's append descriptor while retaining data.
+func (s *FileStore) CloseRoom(room string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w := s.bufs[room]; w != nil {
+		if err := w.Flush(); err != nil {
+			return err
+		}
+	}
+	f := s.files[room]
+	if f == nil {
+		return nil
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	delete(s.files, room)
+	delete(s.bufs, room)
+	delete(s.dirty, room)
+	return nil
+}
+
+// Stats returns current descriptors and on-disk log count/bytes.
+func (s *FileStore) Stats() (Stats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := Stats{OpenFiles: len(s.files)}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return stats, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return stats, err
+		}
+		stats.OpenLogs++
+		stats.Bytes += info.Size()
+	}
+	return stats, nil
 }
 
 func (s *FileStore) syncLoop() {
@@ -371,6 +616,9 @@ func (s *FileStore) Compact(room string, state map[string]crdt.Register) error {
 }
 
 func (s *FileStore) compactLocked(room string, state map[string]crdt.Register) error {
+	if err := s.ensureMetadataLocked(room); err != nil {
+		return err
+	}
 	dest := s.path(room)
 	tmp := dest + ".tmp"
 	if err := writeLog(tmp, state); err != nil {
@@ -398,6 +646,36 @@ func (s *FileStore) compactLocked(room string, state map[string]crdt.Register) e
 		delete(s.sizes, room)
 	}
 	return nil
+}
+
+// Delete removes a room's append handle, log, and metadata. It is safe to call
+// repeatedly for an already absent room.
+func (s *FileStore) Delete(room string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if w := s.bufs[room]; w != nil {
+		if err := w.Flush(); err != nil {
+			return err
+		}
+	}
+	if f := s.files[room]; f != nil {
+		if err := f.Sync(); err != nil {
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	delete(s.files, room)
+	delete(s.bufs, room)
+	delete(s.sizes, room)
+	delete(s.dirty, room)
+	for _, path := range []string{s.path(room), s.metadataPath(room)} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return syncDir(s.dir)
 }
 
 func writeLog(path string, state map[string]crdt.Register) error {
@@ -433,6 +711,25 @@ func writeLog(path string, state map[string]crdt.Register) error {
 // flushes and fsyncs open files before copying, but it does not freeze the
 // process.
 func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
+	if dst == "" {
+		return nil, errors.New("backup destination is required")
+	}
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, err
+	}
+	resolvedStore, err := filepath.EvalSymlinks(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return nil, err
+	}
+	resolvedDst := filepath.Join(resolvedParent, filepath.Base(filepath.Clean(dst)))
+	if directoriesOverlap(resolvedStore, resolvedDst) {
+		return nil, errors.New("backup destination and store directory must not overlap")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -451,13 +748,27 @@ func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return nil, err
 	}
+	dstInfo, err := os.Lstat(dst)
+	if err != nil {
+		return nil, err
+	}
+	if !dstInfo.IsDir() {
+		return nil, fmt.Errorf("backup destination is not a real directory: %s", dst)
+	}
+	resolvedDst, err = filepath.EvalSymlinks(dst)
+	if err != nil {
+		return nil, err
+	}
+	if directoriesOverlap(resolvedStore, resolvedDst) {
+		return nil, errors.New("backup destination and store directory must not overlap")
+	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, err
 	}
 	manifest := &BackupManifest{Format: 1, Created: time.Now().UTC()}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".log") && !strings.HasSuffix(entry.Name(), ".meta")) {
 			continue
 		}
 		bf, err := copyHashed(filepath.Join(dst, entry.Name()), filepath.Join(s.dir, entry.Name()))
@@ -472,12 +783,24 @@ func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmp := filepath.Join(dst, ManifestFile+".tmp")
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	tmp, err := os.CreateTemp(dst, ".syncwell-manifest-*")
+	if err != nil {
 		return nil, err
 	}
-	if err := os.Rename(tmp, filepath.Join(dst, ManifestFile)); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmpPath, filepath.Join(dst, ManifestFile)); err != nil {
 		return nil, err
 	}
 	if err := syncDir(dst); err != nil {
@@ -489,9 +812,20 @@ func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
 // VerifyBackup checks a backup directory against its manifest and returns the
 // manifest. Any missing file, size mismatch, or checksum mismatch is an error.
 func VerifyBackup(dir string) (*BackupManifest, error) {
-	data, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	f, err := openRegular(filepath.Join(dir, ManifestFile))
 	if err != nil {
 		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, (16<<20)+1))
+	closeErr := f.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if len(data) > 16<<20 {
+		return nil, errors.New("backup manifest exceeds 16 MiB")
 	}
 	var m BackupManifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -500,23 +834,33 @@ func VerifyBackup(dir string) (*BackupManifest, error) {
 	if m.Format != 1 {
 		return nil, fmt.Errorf("unsupported backup format %d", m.Format)
 	}
+	seen := make(map[string]struct{}, len(m.Files))
 	for _, bf := range m.Files {
-		if bf.Name == "" || filepath.Base(bf.Name) != bf.Name || !strings.HasSuffix(bf.Name, ".log") {
+		if bf.Name == "" || filepath.Base(bf.Name) != bf.Name || (!strings.HasSuffix(bf.Name, ".log") && !strings.HasSuffix(bf.Name, ".meta")) {
 			return nil, fmt.Errorf("unsafe backup entry %q", bf.Name)
 		}
+		if _, ok := seen[bf.Name]; ok {
+			return nil, fmt.Errorf("duplicate backup entry %q", bf.Name)
+		}
+		seen[bf.Name] = struct{}{}
 		path := filepath.Join(dir, bf.Name)
-		fi, err := os.Stat(path)
+		file, err := openRegular(path)
 		if err != nil {
 			return nil, err
 		}
-		if fi.Size() != bf.Size {
-			return nil, fmt.Errorf("backup file %s: size %d, manifest says %d", bf.Name, fi.Size(), bf.Size)
-		}
-		sum, err := fileSHA256(path)
+		h := sha256.New()
+		size, err := io.Copy(h, file)
+		closeErr := file.Close()
 		if err != nil {
 			return nil, err
 		}
-		if sum != bf.SHA256 {
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if size != bf.Size {
+			return nil, fmt.Errorf("backup file %s: size %d, manifest says %d", bf.Name, size, bf.Size)
+		}
+		if hex.EncodeToString(h.Sum(nil)) != bf.SHA256 {
 			return nil, fmt.Errorf("backup file %s: checksum mismatch", bf.Name)
 		}
 	}
@@ -527,6 +871,9 @@ func VerifyBackup(dir string) (*BackupManifest, error) {
 // Stale logs in dst are removed so a restore cannot mix old and backed-up
 // state. The server must be stopped while restoring.
 func Restore(src, dst string) (*BackupManifest, error) {
+	if src == "" || dst == "" {
+		return nil, errors.New("backup source and restore destination are required")
+	}
 	m, err := VerifyBackup(src)
 	if err != nil {
 		return nil, err
@@ -534,63 +881,183 @@ func Restore(src, dst string) (*BackupManifest, error) {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return nil, err
 	}
+	resolvedSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return nil, err
+	}
+	resolvedDst, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return nil, err
+	}
+	if directoriesOverlap(resolvedSrc, resolvedDst) {
+		return nil, errors.New("backup source and restore destination must not overlap")
+	}
+	stage, err := os.MkdirTemp(dst, ".syncwell-restore-*")
+	if err != nil {
+		return nil, err
+	}
+	keepStage := false
+	defer func() {
+		if !keepStage {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	newDir := filepath.Join(stage, "new")
+	oldDir := filepath.Join(stage, "old")
+	if err := os.Mkdir(newDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(oldDir, 0o700); err != nil {
+		return nil, err
+	}
+	for _, bf := range m.Files {
+		if err := copyVerified(filepath.Join(newDir, bf.Name), filepath.Join(src, bf.Name), bf); err != nil {
+			return nil, err
+		}
+	}
+	if err := syncDir(newDir); err != nil {
+		return nil, err
+	}
+
 	entries, err := os.ReadDir(dst)
 	if err != nil {
 		return nil, err
 	}
+	var saved []string
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".log") && !strings.HasSuffix(entry.Name(), ".meta")) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dst, entry.Name())); err != nil {
-			return nil, err
+		if err := os.Rename(filepath.Join(dst, entry.Name()), filepath.Join(oldDir, entry.Name())); err != nil {
+			return nil, rollbackPlainRestore(dst, oldDir, nil, saved, stage, &keepStage, err)
 		}
+		saved = append(saved, entry.Name())
 	}
+	if err := errors.Join(syncDir(oldDir), syncDir(dst)); err != nil {
+		return nil, rollbackPlainRestore(dst, oldDir, nil, saved, stage, &keepStage, err)
+	}
+	var installed []string
 	for _, bf := range m.Files {
-		if err := copyAtomic(filepath.Join(dst, bf.Name), filepath.Join(src, bf.Name)); err != nil {
-			return nil, err
+		if err := os.Rename(filepath.Join(newDir, bf.Name), filepath.Join(dst, bf.Name)); err != nil {
+			return nil, rollbackPlainRestore(dst, oldDir, installed, saved, stage, &keepStage, err)
 		}
+		installed = append(installed, bf.Name)
+	}
+	if err := syncDir(dst); err != nil {
+		return nil, rollbackPlainRestore(dst, oldDir, installed, saved, stage, &keepStage, err)
+	}
+	if err := os.RemoveAll(stage); err != nil {
+		return nil, fmt.Errorf("restore committed but could not remove staging directory %s: %w", stage, err)
+	}
+	if err := syncDir(dst); err != nil {
+		return nil, err
 	}
 	return m, nil
 }
 
+func rollbackPlainRestore(dst, oldDir string, installed, saved []string, stage string, keepStage *bool, cause error) error {
+	var rollbackErr error
+	for _, name := range installed {
+		if err := os.Remove(filepath.Join(dst, name)); err != nil && !os.IsNotExist(err) {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+	}
+	for _, name := range saved {
+		if err := os.Rename(filepath.Join(oldDir, name), filepath.Join(dst, name)); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+	}
+	rollbackErr = errors.Join(rollbackErr, syncDir(dst))
+	if rollbackErr != nil {
+		*keepStage = true
+		return fmt.Errorf("restore failed: %w; rollback failed: %v; recovery files kept in %s", cause, rollbackErr, stage)
+	}
+	return cause
+}
+
 func copyHashed(dst, src string) (BackupFile, error) {
-	in, err := os.Open(src)
+	in, err := openRegular(src)
 	if err != nil {
 		return BackupFile{}, err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".syncwell-backup-file-*")
 	if err != nil {
 		return BackupFile{}, err
 	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(out, h), in)
+	n, err := io.Copy(io.MultiWriter(tmp, h), in)
 	if err != nil {
-		_ = out.Close()
+		_ = tmp.Close()
 		return BackupFile{}, err
 	}
-	if err := out.Sync(); err != nil {
-		_ = out.Close()
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return BackupFile{}, err
 	}
-	if err := out.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
+		return BackupFile{}, err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return BackupFile{}, err
+	}
+	if err := syncDir(filepath.Dir(dst)); err != nil {
 		return BackupFile{}, err
 	}
 	return BackupFile{Name: filepath.Base(dst), Size: n, SHA256: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
-func copyAtomic(dst, src string) error {
-	tmp := dst + ".restore.tmp"
-	if _, err := copyHashed(tmp, src); err != nil {
-		_ = os.Remove(tmp)
+func copyVerified(dst, src string, expected BackupFile) error {
+	in, err := openRegular(src)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
 		return err
 	}
-	return syncDir(filepath.Dir(dst))
+	h := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(out, h), in)
+	if copyErr == nil && (n != expected.Size || hex.EncodeToString(h.Sum(nil)) != expected.SHA256) {
+		copyErr = fmt.Errorf("backup file %s changed during restore", expected.Name)
+	}
+	var syncErr error
+	if copyErr == nil {
+		syncErr = out.Sync()
+	}
+	closeErr := out.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		_ = os.Remove(dst)
+		return errors.Join(copyErr, syncErr, closeErr)
+	}
+	return nil
+}
+
+func openRegular(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("refusing non-regular file: %s", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	actual, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !actual.Mode().IsRegular() || !os.SameFile(info, actual) {
+		f.Close()
+		return nil, fmt.Errorf("file changed while opening: %s", path)
+	}
+	return f, nil
 }
 
 // syncDir makes a rename durable across power loss.
@@ -601,19 +1068,6 @@ func syncDir(dir string) error {
 	}
 	defer d.Close()
 	return d.Sync()
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Close flushes, fsyncs, and closes every open room file.

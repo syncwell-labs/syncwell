@@ -32,8 +32,8 @@ and the restore drill pass.
 - Documentation and examples are part of the change.
 
 The canonical policy is
-[`docs/product/GOVERNANCE.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/product/GOVERNANCE.md).
+[`docs/product/GOVERNANCE.md`](https://github.com/syncwell-labs/syncwell/blob/main/docs/product/GOVERNANCE.md).
 Participation follows the
-[Code of Conduct](https://github.com/Nil-Vaghani/syncwell/blob/main/CODE_OF_CONDUCT.md);
+[Code of Conduct](https://github.com/syncwell-labs/syncwell/blob/main/CODE_OF_CONDUCT.md);
 vulnerabilities follow
-[SECURITY.md](https://github.com/Nil-Vaghani/syncwell/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/syncwell-labs/syncwell/blob/main/SECURITY.md).

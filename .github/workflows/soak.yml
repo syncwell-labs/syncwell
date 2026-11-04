@@ -1,0 +1,49 @@
+name: Nightly soak
+
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    # Register a dedicated, capacity-tested runner with this label.
+    runs-on: [self-hosted, linux, x64, syncwell-soak]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.26.10"
+      - name: Build server and load harness
+        run: make build loadtest-bin
+      - name: Run 2,000-client benchmark soak
+        run: CLIENTS=2000 MAX_CLIENTS=2000 DURATION_MS=600000 timeout 20m make bench > soak-bench.md
+      - name: Run WebSocket load soak
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./bin/syncwell -addr 127.0.0.1:8191 -max-conns 2500 -ws-rate -1 > soak-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8191/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          ./bin/loadtest -url ws://127.0.0.1:8191/ws -clients 2000 -rooms 100 \
+            -duration 10m -warmup 20s -interval 100ms -server-pid "$server_pid" \
+            | tee soak-loadtest.txt
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: syncwell-soak-${{ github.run_id }}
+          path: |
+            soak-bench.md
+            soak-server.log
+            soak-loadtest.txt
+          if-no-files-found: warn
+          retention-days: 30

@@ -103,16 +103,11 @@ func main() {
 		node    string
 	}
 	publishers := make([]*pubState, *rooms)
-	ready := make(chan struct{}, *rooms)
-
-	var wg sync.WaitGroup
 	for room := 0; room < *rooms; room++ {
 		roomID := fmt.Sprintf("load-%d", room)
 		node := fmt.Sprintf("lt-%d", room)
 		for i := 0; i < perRoom; i++ {
-			wg.Add(1)
 			go func(roomID, node string, publisher bool) {
-				defer wg.Done()
 				u, err := url.Parse(*base)
 				if err != nil {
 					failed.Add(1)
@@ -150,7 +145,6 @@ func main() {
 
 				if publisher {
 					publishers[room] = &pubState{conn: conn, epoch: snap.Epoch, node: node}
-					ready <- struct{}{}
 				}
 				for {
 					_, data, err := conn.ReadMessage()
@@ -178,17 +172,14 @@ func main() {
 			}(roomID, node, i == 0)
 		}
 	}
-	go func() {
-		connectedFirst.Wait()
-		close(ready)
-	}()
-
-	for range ready {
-	}
+	connectedFirst.Wait()
 	if connected.Load() == 0 {
 		log.Fatal("no clients connected")
 	}
 	fmt.Printf("connected=%d failed=%d rooms=%d clients/room=%d\n", connected.Load(), failed.Load(), *rooms, perRoom)
+	if err := validateConnections(*clients, connected.Load(), failed.Load()); err != nil {
+		log.Fatal(err)
+	}
 
 	// Warmup then discard samples to avoid startup noise.
 	stop := make(chan struct{})
@@ -274,4 +265,11 @@ func main() {
 			_ = r.conn.Close()
 		}
 	}
+}
+
+func validateConnections(requested int, connected, failed uint64) error {
+	if connected != uint64(requested) {
+		return fmt.Errorf("loadtest requires all requested clients to connect: connected=%d requested=%d failed=%d", connected, requested, failed)
+	}
+	return nil
 }

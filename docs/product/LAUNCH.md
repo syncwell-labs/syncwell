@@ -52,7 +52,7 @@ has no persistent disk, so demo rooms reset on restart.
 Deploy by immutable image digest, never `latest`:
 
 ```text
-ghcr.io/nil-vaghani/syncwell@sha256:f37fc729237873b75c94824ba5503908800a98990fa35f30fcbf7314f5dbc1d2
+ghcr.io/syncwell-labs/syncwell@sha256:<published-digest>
 ```
 
 `SYNCWELL_DATA` is intentionally unset on the free plan (in-memory rooms). For a
@@ -68,13 +68,16 @@ curl -fsS -H "Authorization: Bearer $SYNCWELL_ADMIN_TOKEN" \
 ```
 
 For a token-protected deployment (paid host or real data), remove
-`SYNCWELL_INSECURE`, set `SYNCWELL_SECRET`, then mint one long-lived token per
-demo room and publish those URLs:
+`SYNCWELL_INSECURE` and set `SYNCWELL_SECRET`. For the bundled demo pages only,
+mint one long-lived token per demo room and publish the demo URLs below. These
+query-token URLs are a demo-only convention; application SDK clients should
+receive the token through the SDK's `token` option instead.
 
 ```bash
 for room in demo kanban sequence-demo; do
   ./bin/syncwell -secret "$SYNCWELL_SECRET" -mint "$room" -ttl 8760h
 done
+# Demo-only URLs for the bundled pages:
 # https://<demo-host>/?room=demo&token=<demo-token>
 # https://<demo-host>/kanban.html?room=kanban&token=<kanban-token>
 # https://<demo-host>/sequence.html?room=sequence-demo&token=<sequence-demo-token>

@@ -133,8 +133,13 @@ func normalizeCapsList(caps []string) []string {
 	if len(out) == 0 {
 		out = DefaultRoomCaps()
 	}
-	// Stable order ensures signatures are deterministic.
+	return orderCaps(out)
+}
+
+// orderCaps returns capabilities in the stable order used by token signing.
+func orderCaps(caps []string) []string {
 	order := map[string]int{CapRead: 0, CapWrite: 1, CapPresence: 2, CapAdmin: 3}
+	out := append([]string(nil), caps...)
 	for i := 0; i < len(out); i++ {
 		for j := i + 1; j < len(out); j++ {
 			if order[out[j]] < order[out[i]] {
@@ -145,16 +150,48 @@ func normalizeCapsList(caps []string) []string {
 	return out
 }
 
-func parseCapsCSV(caps string) map[string]bool {
-	out := map[string]bool{}
-	for _, c := range strings.Split(caps, ",") {
-		switch strings.TrimSpace(strings.ToLower(c)) {
-		case CapRead, CapWrite, CapPresence, CapAdmin:
-			out[strings.TrimSpace(strings.ToLower(c))] = true
+// ValidateCapsList validates operator-supplied capabilities strictly. Unknown
+// names are errors rather than silently ignored so a typo in -mint-caps cannot
+// fall back to the full default capability set.
+func ValidateCapsList(caps []string) ([]string, error) {
+	if len(caps) == 0 {
+		return DefaultRoomCaps(), nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(caps))
+	for _, raw := range caps {
+		c := strings.TrimSpace(strings.ToLower(raw))
+		if c == "" {
+			continue
 		}
+		switch c {
+		case CapRead, CapWrite, CapPresence, CapAdmin:
+		default:
+			return nil, fmt.Errorf("unknown capability %q (valid: read, write, presence, admin)", raw)
+		}
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
 	}
 	if len(out) == 0 {
-		for _, c := range DefaultRoomCaps() {
+		return nil, fmt.Errorf("at least one capability is required")
+	}
+	return orderCaps(out), nil
+}
+
+func parseCapsCSV(caps string) map[string]bool {
+	// An absent caps list keeps the historical full-access default (legacy
+	// tokens). A non-empty list with no recognized capability fails closed.
+	if strings.TrimSpace(caps) == "" {
+		caps = strings.Join(DefaultRoomCaps(), ",")
+	}
+	out := map[string]bool{}
+	for _, c := range strings.Split(caps, ",") {
+		c = strings.TrimSpace(strings.ToLower(c))
+		switch c {
+		case CapRead, CapWrite, CapPresence, CapAdmin:
 			out[c] = true
 		}
 	}

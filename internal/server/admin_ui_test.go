@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syncwell/internal/store"
 	"testing"
 	"time"
 )
@@ -58,5 +59,33 @@ func TestAdminUIAndRoomEndpoints(t *testing.T) {
 	h.ServeAdminRoomAction(mr, missing)
 	if mr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing room, got %d", mr.Code)
+	}
+}
+
+func TestAdminPurgeDeletesPersistentRoom(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Append("purge-me", store.Record{Key: "k", Reg: serverReg("v", 1, "n")}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHub(Config{Store: st, AdminToken: "secret-admin"})
+	if _, err := h.room("purge-me"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/rooms/purge-me/purge", nil)
+	req.Header.Set("Authorization", "Bearer secret-admin")
+	response := httptest.NewRecorder()
+	h.ServeAdminRoomAction(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("purge status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got, err := st.Load("purge-me"); err != nil || len(got) != 0 {
+		t.Fatalf("state after purge=%v err=%v", got, err)
+	}
+	if h.lookupRoom("purge-me") != nil {
+		t.Fatal("purged room remains live")
 	}
 }

@@ -32,10 +32,10 @@ function randomId() {
   }
 }
 
-function buildURL(baseURL, room, token, delta) {
+function buildURL(baseURL, room, token, delta, tokenInQuery = false) {
   const url = new URL(baseURL, "http://syncwell.local");
   url.searchParams.set("room", room);
-  if (token) url.searchParams.set("token", token);
+  if (token && tokenInQuery) url.searchParams.set("token", token);
   if (delta) url.searchParams.set("delta", "1");
   const out = url.toString();
   return baseURL.startsWith("/") ? out.replace("http://syncwell.local", "") : out;
@@ -78,7 +78,18 @@ export class Syncwell {
     this.baseURL = baseURL;
     this.room = room;
     this.token = opts.token;
-    this.url = buildURL(baseURL, room, opts.token, false);
+    if (this.token != null && typeof this.token !== "string") {
+      throw new TypeError("token must be a string");
+    }
+    this.tokenTransport = opts.tokenTransport ?? "subprotocol";
+    if (this.tokenTransport !== "subprotocol" && this.tokenTransport !== "query") {
+      throw new TypeError('tokenTransport must be "subprotocol" or "query"');
+    }
+    this.followOwner = opts.followOwner === true;
+    this.fetch = opts.fetch || (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : null);
+    this._routePromise = null;
+    this._routeGeneration = 0;
+    this.url = buildURL(baseURL, room, opts.token, false, this.tokenTransport !== "subprotocol");
     this.clientId = opts.clientId || randomId();
     this.WS = opts.WebSocket || defaultWS();
     this.handlers = {};
@@ -154,10 +165,52 @@ export class Syncwell {
       this._reconnectTimer = null;
     }
     this._closed = false;
+    if (this.followOwner) {
+      if (!this.fetch) throw new SyncwellError("NO_FETCH", "followOwner requires fetch support");
+      if (this._routePromise) return this;
+      const generation = ++this._routeGeneration;
+      this._routePromise = this._resolveOwnerURL()
+        .then((url) => {
+          if (generation !== this._routeGeneration || this._closed) return;
+          this._routePromise = null;
+          this._connectSocket(url);
+        })
+        .catch((err) => {
+          if (generation !== this._routeGeneration || this._closed) return;
+          this._routePromise = null;
+          this._emitError("ROUTE_FAILED", "could not resolve room owner", err);
+          this._scheduleReconnect();
+        });
+      return this;
+    }
+    return this._connectSocket(this.baseURL);
+  }
+
+  async _resolveOwnerURL() {
+    const base = new URL(this.baseURL, typeof location !== "undefined" ? location.href : "http://syncwell.local");
+    const route = new URL(base.origin);
+    route.protocol = base.protocol === "wss:" ? "https:" : "http:";
+    route.pathname = "/route";
+    route.searchParams.set("room", this.room);
+    const response = await this.fetch(route.toString(), { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`route endpoint returned HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data || typeof data.url !== "string") throw new Error("route response has no WebSocket URL");
+    const ownerURL = new URL(data.url, route);
+    if (ownerURL.protocol !== "ws:" && ownerURL.protocol !== "wss:") throw new Error("route response URL must use ws or wss");
+    return ownerURL.toString();
+  }
+
+  _connectSocket(baseURL) {
+    if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) return this;
+    this._closed = false;
     this._ready = false;
     this._delta = this._deltaEnabled && Object.keys(this._vector()).length > 0;
-    this.url = buildURL(this.baseURL, this.room, this.token, this._delta);
-    const ws = new this.WS(this.url);
+    this.url = buildURL(baseURL, this.room, this.token, this._delta, this.tokenTransport !== "subprotocol");
+    const protocols = this.tokenTransport === "subprotocol" && this.token
+      ? ["syncwell", "syncwell.token." + this.token]
+      : undefined;
+    const ws = protocols ? new this.WS(this.url, protocols) : new this.WS(this.url);
     this.ws = ws;
     this.ws.onopen = async () => {
       if (this.ws !== ws) return;
@@ -178,8 +231,7 @@ export class Syncwell {
         }
       }
     };
-    this.ws.onclose = () => {
-      if (this.ws !== ws) return;
+    const afterDisconnect = () => {
       clearInterval(this._ackTimer);
       clearTimeout(this._helloTimer);
       this._ackTimer = null;
@@ -189,6 +241,12 @@ export class Syncwell {
       if (this._closed) return;
       this._scheduleReconnect();
     };
+    const disconnected = () => {
+      if (this.ws !== ws) return;
+      this.ws = null;
+      afterDisconnect();
+    };
+    this.ws.onclose = disconnected;
     this.ws.onmessage = (e) => {
       if (this.ws !== ws) return;
       try {
@@ -197,12 +255,24 @@ export class Syncwell {
         this._emitError("BAD_FRAME", "could not parse server frame", err);
       }
     };
-    this.ws.onerror = () => {}; // close handler drives reconnect
+    this.ws.onerror = () => {
+      if (this.ws !== ws) return;
+      // Some WebSocket implementations emit error without a close frame on
+      // connection failure. Detach first so close() cannot re-enter this
+      // handler, then close explicitly and run the reconnect path.
+      this.ws = null;
+      try {
+        ws.close();
+      } catch {}
+      afterDisconnect();
+    };
     return this;
   }
 
   close() {
     this._closed = true;
+    this._routeGeneration++;
+    this._routePromise = null;
     clearInterval(this._ackTimer);
     clearTimeout(this._reconnectTimer);
     clearTimeout(this._helloTimer);
@@ -248,12 +318,19 @@ export class Syncwell {
     return out;
   }
   _dirtyState() {
+    this._pruneDirty();
     const out = {};
     for (const key of this._dirty) {
       const reg = this.doc.entries.get(key);
       if (reg) out[key] = reg;
     }
     return out;
+  }
+  _pruneDirty() {
+    for (const key of this._dirty) {
+      const reg = this.doc.entries.get(key);
+      if (!reg || reg.t?.n !== this.clientId) this._dirty.delete(key);
+    }
   }
   _sendHello() {
     const vector = this._vector();
@@ -356,11 +433,10 @@ export class Syncwell {
         this.epoch = Math.max(1, Number(msg.epoch) || this.epoch);
         for (const k of Object.keys(msg.state || {})) this.clock.observe(msg.state[k].t);
         this.doc.mergeState(msg.state || {});
+        if (!this._ready) this._dirty.clear();
+        else this._pruneDirty();
         this._saveLocal();
-        if (!this._ready) {
-          this._dirty.clear();
-          this._startReady();
-        }
+        if (!this._ready) this._startReady();
         this._changed();
         break;
       case "delta":
@@ -368,6 +444,7 @@ export class Syncwell {
         for (const k of Object.keys(msg.state || {})) this.clock.observe(msg.state[k].t);
         this.doc.mergeState(msg.state || {});
         this._clearAcknowledgedDirty();
+        this._pruneDirty();
         this._saveLocal();
         this._startReady();
         this._changed();
@@ -380,6 +457,7 @@ export class Syncwell {
         }
         this.clock.observe(msg.register?.t);
         this.doc.mergeRegister(msg.key, msg.register);
+        this._pruneDirty();
         this._saveLocal();
         this._changed();
         break;

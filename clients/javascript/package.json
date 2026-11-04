@@ -77,12 +77,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Nil-Vaghani/syncwell.git",
+    "url": "git+https://github.com/syncwell-labs/syncwell.git",
     "directory": "clients/javascript"
   },
-  "homepage": "https://github.com/Nil-Vaghani/syncwell#readme",
+  "homepage": "https://github.com/syncwell-labs/syncwell#readme",
   "bugs": {
-    "url": "https://github.com/Nil-Vaghani/syncwell/issues"
+    "url": "https://github.com/syncwell-labs/syncwell/issues"
   },
   "license": "MIT",
   "devDependencies": {

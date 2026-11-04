@@ -43,9 +43,10 @@ stable credentials:
 export SYNCWELL_SECRET=$(openssl rand -hex 32)
 export SYNCWELL_ADMIN_TOKEN=$(openssl rand -hex 32)
 make build && ./bin/syncwell -addr :8080
-# in another shell: mint a pass for the demo room (demo pages accept ?token=...):
+# in another shell: mint a pass for the bundled demo page:
 ./bin/syncwell -secret "$SYNCWELL_SECRET" -mint demo
-# open http://localhost:8080/?room=demo&token=<token>
+# Demo-only URL convention (SDK clients pass the token in SDK options):
+# http://localhost:8080/?room=demo&token=<token>
 ```
 
 ### Production knobs (all optional)
@@ -82,8 +83,8 @@ clustering) · `-cluster-peers` lists full-mesh replication peers.
 
 ```bash
 # offline backup / verify / restore (checksummed manifest):
-syncwell -data ./data -backup ./backup
-syncwell -verify-backup ./backup
+syncwell -data ./data -backup ./backup -backup-recipient age1...
+syncwell -verify-backup ./backup -restore-identity ./backup-identity.txt
 syncwell -restore ./backup -data ./data
 
 # issue a 24h token for a room:
@@ -109,19 +110,21 @@ docker run --rm -p 127.0.0.1:8080:8080 -e SYNCWELL_INSECURE=1 syncwell
 # production-style run with explicit, reusable credentials:
 SECRET=$(openssl rand -hex 32); ADMIN=$(openssl rand -hex 32)
 docker run --rm -p 8080:8080 -e SYNCWELL_SECRET=$SECRET -e SYNCWELL_ADMIN_TOKEN=$ADMIN syncwell
-# mint a room token for the demo page:
+# mint a room token for the bundled demo page:
 docker run --rm -e SYNCWELL_SECRET=$SECRET syncwell -mint demo
-# open http://localhost:8080/?room=demo&token=<token>
+# Demo-only URL convention (SDK clients pass the token in SDK options):
+# http://localhost:8080/?room=demo&token=<token>
 # or the full self-host stack (secrets + persistent volume + volume chown):
 cp .env.example .env   # set SYNCWELL_SECRET and SYNCWELL_ADMIN_TOKEN
 docker compose up -d --build
 docker compose run --rm syncwell -mint demo   # room token for the demo pages
-# open http://localhost:8080/?room=demo&token=<token>
+# Demo-only URL convention (SDK clients pass the token in SDK options):
+# http://localhost:8080/?room=demo&token=<token>
 ```
 
 Once a release is tagged, prebuilt archives for Linux, macOS, and Windows
 (amd64/arm64) attach to each
-[release](https://github.com/Nil-Vaghani/syncwell/releases/latest)
+[release](https://github.com/syncwell-labs/syncwell/releases/latest)
 automatically, with `checksums.txt` and SPDX SBOMs (until then, build from
 source as above). Platform templates live in
 [`render.yaml`](render.yaml), [`docker-compose.yml`](docker-compose.yml), and

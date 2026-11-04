@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,10 +21,12 @@ import (
 // them. Delivery is asynchronous and bounded: a slow consumer can never block
 // a room's single-owner goroutine.
 type WebhookConfig struct {
-	URLs    []string
-	Secret  string
-	Timeout time.Duration
-	Queue   int
+	URLs           []string
+	Secret         string
+	Timeout        time.Duration
+	Queue          int
+	AllowPrivate   bool // explicitly permit private/loopback destinations (trusted local receiver)
+	HashRoomInLogs bool
 }
 
 // WebhookEvent is the JSON payload POSTed to every configured URL.
@@ -36,12 +40,13 @@ type WebhookEvent struct {
 
 // WebhookDispatcher fan-outs milestone events to configured HTTP endpoints.
 type WebhookDispatcher struct {
-	urls   []string
-	secret string
-	client *http.Client
-	queue  chan WebhookEvent
-	done   chan struct{}
-	wg     sync.WaitGroup
+	urls           []string
+	secret         string
+	hashRoomInLogs bool
+	client         *http.Client
+	queue          chan WebhookEvent
+	done           chan struct{}
+	wg             sync.WaitGroup
 
 	delivered atomic.Uint64
 	failed    atomic.Uint64
@@ -68,12 +73,18 @@ func NewWebhookDispatcher(cfg WebhookConfig) *WebhookDispatcher {
 	if queue <= 0 {
 		queue = 256
 	}
+	client := &http.Client{
+		Timeout:       timeout,
+		Transport:     newSafeTransport(cfg.AllowPrivate),
+		CheckRedirect: validateRedirect(cfg.AllowPrivate),
+	}
 	d := &WebhookDispatcher{
-		urls:   urls,
-		secret: cfg.Secret,
-		client: &http.Client{Timeout: timeout},
-		queue:  make(chan WebhookEvent, queue),
-		done:   make(chan struct{}),
+		urls:           urls,
+		secret:         cfg.Secret,
+		hashRoomInLogs: cfg.HashRoomInLogs,
+		client:         client,
+		queue:          make(chan WebhookEvent, queue),
+		done:           make(chan struct{}),
 	}
 	workers := 2
 	if len(urls) > workers {
@@ -98,7 +109,7 @@ func (d *WebhookDispatcher) Emit(event, room, node string, data map[string]any) 
 	case <-d.done:
 	default:
 		d.dropped.Add(1)
-		LogEvent("webhook_dropped", map[string]any{"event": event, "room": room})
+		LogEvent("webhook_dropped", map[string]any{"event": event, "room": d.logRoom(room)})
 	}
 }
 
@@ -143,17 +154,39 @@ func (d *WebhookDispatcher) deliver(ev WebhookEvent) {
 		resp, err := d.client.Do(req)
 		if err != nil {
 			d.failed.Add(1)
-			LogEvent("webhook_error", map[string]any{"event": ev.Event, "room": ev.Room, "error": err.Error()})
+			LogEvent("webhook_error", map[string]any{"event": ev.Event, "room": d.logRoom(ev.Room), "error": err.Error()})
 			continue
 		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		_ = resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			d.failed.Add(1)
-			LogEvent("webhook_error", map[string]any{"event": ev.Event, "room": ev.Room, "status": resp.StatusCode})
+			LogEvent("webhook_error", map[string]any{"event": ev.Event, "room": d.logRoom(ev.Room), "status": resp.StatusCode})
 			continue
 		}
 		d.delivered.Add(1)
 	}
+}
+
+func (d *WebhookDispatcher) logRoom(room string) string {
+	if d != nil && d.hashRoomInLogs {
+		return redisRoomHash(room)
+	}
+	return room
+}
+
+// ValidateWebhookURLs applies the outbound egress policy at startup so a
+// misconfigured destination fails closed instead of silently retrying forever.
+func ValidateWebhookURLs(urls []string, allowPrivate bool) error {
+	for _, raw := range urls {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		if err := validateEgressURL(raw, allowPrivate); err != nil {
+			return fmt.Errorf("webhook URL %q: %w", raw, err)
+		}
+	}
+	return nil
 }
 
 // Metrics returns delivery counters for /metrics.

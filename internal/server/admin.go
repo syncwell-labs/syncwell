@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 )
 
 //go:embed admin.html
@@ -33,7 +35,13 @@ func (h *Hub) ServeAdminRooms(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	stats := h.Stats()
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	stats, ok := h.StatsContext(ctx)
+	if !ok {
+		http.Error(w, "stats timeout", http.StatusServiceUnavailable)
+		return
+	}
 	rooms := make([]adminRoom, 0, len(stats))
 	for id, s := range stats {
 		rooms = append(rooms, adminRoom{ID: id, RoomStats: s})
@@ -52,6 +60,10 @@ func (h *Hub) ServeAdminRoomAction(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !originOK(req.Header.Get("Origin"), h.cfg.Origins) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
 	if !h.adminAllowed(req) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -66,17 +78,30 @@ func (h *Hub) ServeAdminRoomAction(w http.ResponseWriter, req *http.Request) {
 	var ok bool
 	switch action {
 	case "resnapshot":
-		ok = h.ResnapshotRoom(room)
+		ok = h.ResnapshotRoomWithRequestID(room, RequestID(req.Context()))
 	case "evict":
-		ok = h.EvictRoom(room)
+		ok = h.EvictRoomWithRequestID(room, RequestID(req.Context()))
+	case "purge":
+		err := h.PurgeRoom(room, RequestID(req.Context()))
+		if err != nil {
+			h.recordAudit(req, "room.purge", room, "error")
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		h.recordAudit(req, "room.purge", room, "ok")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "room": room, "action": action})
+		return
 	default:
 		http.Error(w, "unknown action", http.StatusNotFound)
 		return
 	}
 	if !ok {
+		h.recordAudit(req, "room."+action, room, "error")
 		http.Error(w, "room not found", http.StatusNotFound)
 		return
 	}
+	h.recordAudit(req, "room."+action, room, "ok")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "room": room, "action": action})
 }

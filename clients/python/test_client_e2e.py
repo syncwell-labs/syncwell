@@ -47,6 +47,40 @@ class PythonClientE2E(unittest.TestCase):
         cls.srv.kill()
         cls.srv.wait(timeout=5)
 
+    def test_token_url_construction(self):
+        # Default: token is NOT put into the URL query parameters
+        client_default = Syncwell("ws://localhost:8080/ws", "room1", token="mytoken")
+        self.assertNotIn("token=", client_default._url())
+
+        # Opt-in: allow_query_token=True puts token into the URL query parameters
+        client_query = Syncwell("ws://localhost:8080/ws", "room1", token="mytoken", allow_query_token=True)
+        self.assertIn("token=mytoken", client_query._url())
+
+    def test_follow_owner_resolves_route_without_query_token(self):
+        seen = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"node":"node-b","url":"wss://owner.example/ws"}'
+
+        def open_route(url, timeout):
+            seen["url"] = url
+            seen["timeout"] = timeout
+            return Response()
+
+        client = Syncwell("ws://seed.example/ws", "room one", token="secret", follow_owner=True, route_opener=open_route)
+        owner = client._resolve_owner_url()
+        self.assertEqual(owner, "wss://owner.example/ws")
+        self.assertIn("/route?room=room+one", seen["url"])
+        self.assertNotIn("token", seen["url"])
+        self.assertNotIn("token=", client._url(owner))
+
     def test_two_clients_converge_and_offline_edits_survive_reconnect(self):
         a = Syncwell(BASE, "python-e2e", client_id="py-A")
         b = Syncwell(BASE, "python-e2e", client_id="py-B")

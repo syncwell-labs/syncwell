@@ -26,7 +26,11 @@ discovery is fail-closed at startup. Grant `admin` explicitly in the caps claim.
 
 ## Origin and network controls
 
-- Set `-origins` to an allow-list for browser clients.
+- Set `-origins` to an exact allow-list for browser clients. Public
+  non-`-insecure` binds fail closed without one; `-allow-any-origin` is an
+  explicit unsafe override for non-browser clients.
+- Webhook URLs must be public `https`; private/loopback/metadata destinations
+  are blocked unless `-webhook-allow-private` is set.
 - Put `/stats`, `/metrics`, `/admin`, and `/cluster/event` behind an allow-list
   or private network.
 - Enable `-trust-proxy` only behind trusted proxies. `X-Forwarded-For` is

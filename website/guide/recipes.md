@@ -1,7 +1,7 @@
 # Framework recipes
 
 Copy-paste integrations live in the repository under
-[`examples/`](https://github.com/Nil-Vaghani/syncwell/tree/main/examples).
+[`examples/`](https://github.com/syncwell-labs/syncwell/tree/main/examples).
 
 ## React hook
 
@@ -56,7 +56,7 @@ sw.connect();
 sw.on("change", (live) => mirror(live));
 ```
 
-See [`examples/`](https://github.com/Nil-Vaghani/syncwell/tree/main/examples)
+See [`examples/`](https://github.com/syncwell-labs/syncwell/tree/main/examples)
 for the full files, and
-[`clients/python/`](https://github.com/Nil-Vaghani/syncwell/tree/main/clients/python) for the
+[`clients/python/`](https://github.com/syncwell-labs/syncwell/tree/main/clients/python) for the
 dependency-free Python client.

@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/Nil-Vaghani/syncwell/security/advisories/new
+    url: https://github.com/syncwell-labs/syncwell/security/advisories/new
     about: Report exploits or credential leaks privately (see SECURITY.md).
   - name: Deployment and operations guide
-    url: https://github.com/Nil-Vaghani/syncwell/blob/main/docs/operations/OPERATIONS.md
+    url: https://github.com/syncwell-labs/syncwell/blob/main/docs/operations/OPERATIONS.md
     about: Backup, restore, alerts, and cluster operation.
   - name: Questions and ideas
-    url: https://github.com/Nil-Vaghani/syncwell/discussions
+    url: https://github.com/syncwell-labs/syncwell/discussions
     about: Ask usage questions or discuss designs before filing a feature request.

@@ -24,12 +24,22 @@ export interface WebSocketLike {
 }
 
 export interface WebSocketConstructor {
-  new (url: string): WebSocketLike;
+  new (url: string, protocols?: string | string[]): WebSocketLike;
 }
 
 export interface SyncwellOptions {
   /** Room token when the server runs with `-secret`. */
   token?: string;
+  /** Token carrier (default: `subprotocol`; use `query` only for legacy servers; other values throw). */
+  tokenTransport?: "query" | "subprotocol";
+  /** Resolve `/route?room=` before each connection/reconnect (default false). */
+  followOwner?: boolean;
+  /** Override fetch used by followOwner (defaults to global fetch). */
+  fetch?: (url: string, init?: { headers?: Record<string, string> }) => Promise<{
+    ok: boolean;
+    status: number;
+    json(): Promise<unknown>;
+  }>;
   /** Stable id used as the CRDT node id; keep it stable with `persist`. */
   clientId?: string;
   /** Persist the local replica + Lamport clock in `storage`. */

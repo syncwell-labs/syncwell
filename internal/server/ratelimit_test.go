@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -216,5 +217,29 @@ func TestClusterHandlerAllowlist(t *testing.T) {
 	}
 	if code := call("203.0.113.5"); code != http.StatusForbidden {
 		t.Fatalf("non-peer: %d", code)
+	}
+}
+
+func TestTokenLimiterStateMapIsBounded(t *testing.T) {
+	now := time.Unix(2000, 0)
+	l := newTokenLimiter(60, 2, 2, time.Minute)
+	l.now = func() time.Time { return now }
+
+	l.states = make(map[string]*ipState, limiterMaxStates+100)
+	for i := 0; i <= limiterMaxStates+50; i++ {
+		l.states[fmt.Sprintf("fresh-%d", i)] = &ipState{tokens: 1, last: now}
+	}
+	l.maybePruneLocked(now)
+	if len(l.states) >= limiterMaxStates {
+		t.Fatalf("state map grew to %d, cap is %d", len(l.states), limiterMaxStates)
+	}
+
+	l.states = make(map[string]*ipState, limiterPruneThreshold+1)
+	for i := 0; i <= limiterPruneThreshold; i++ {
+		l.states[fmt.Sprintf("stale-%d", i)] = &ipState{tokens: 1, last: now.Add(-time.Hour)}
+	}
+	l.maybePruneLocked(now)
+	if len(l.states) != 0 {
+		t.Fatalf("expired limiter states were not pruned: %d remain", len(l.states))
 	}
 }

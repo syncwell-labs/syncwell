@@ -60,4 +60,4 @@ queue overflow and HTTP failures increment metrics. Treat an event as a hint and
 reconcile state if the action must be exactly-once.
 
 Full detail:
-[`docs/operations/ADMIN_AND_WEBHOOKS.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/operations/ADMIN_AND_WEBHOOKS.md).
+[`docs/operations/ADMIN_AND_WEBHOOKS.md`](https://github.com/syncwell-labs/syncwell/blob/main/docs/operations/ADMIN_AND_WEBHOOKS.md).

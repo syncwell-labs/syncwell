@@ -5,6 +5,13 @@ uses only the standard library and shares the same LWW merge rule.
 
 Requires Python 3.10+.
 
+When using room tokens, the Python SDK sends them in an
+`Authorization: Bearer` handshake header by default. For legacy servers that
+only accept query tokens, pass `allow_query_token=True` explicitly.
+For Redis ownership deployments, pass `follow_owner=True` to resolve the
+`/route` endpoint before connecting and after each explicit reconnect. It is
+disabled by default.
+
 ```python
 from syncwell_client import Syncwell
 
@@ -41,4 +48,4 @@ The test starts the Go server on `127.0.0.1:8131`, converges two Python clients,
 disconnects one, edits offline, and verifies the reconnect merge.
 
 Source and full API:
-[`clients/python/`](https://github.com/Nil-Vaghani/syncwell/tree/main/clients/python).
+[`clients/python/`](https://github.com/syncwell-labs/syncwell/tree/main/clients/python).

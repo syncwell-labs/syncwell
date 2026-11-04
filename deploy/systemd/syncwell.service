@@ -3,10 +3,15 @@
 #   sudo install -d -o syncwell -g syncwell /var/lib/syncwell
 #   sudo install -d /usr/share/syncwell && sudo cp -r examples/demos /usr/share/syncwell/demo && sudo cp -r clients/javascript /usr/share/syncwell/sdk
 #   sudo cp deploy/systemd/syncwell.service /etc/systemd/system/
+#   sudo install -m 0600 deploy/systemd/syncwell.env.example /etc/syncwell.env
+#   # edit /etc/syncwell.env and set SYNCWELL_SECRET (and optionally OIDC)
 #   sudo systemctl enable --now syncwell
+#
+# The unit binds to loopback and expects a reverse proxy. It refuses to start
+# without /etc/syncwell.env and room authentication (via -require-auth).
 [Unit]
 Description=Syncwell real-time collaboration engine
-Documentation=https://github.com/Nil-Vaghani/syncwell
+Documentation=https://github.com/syncwell-labs/syncwell
 After=network-online.target
 Wants=network-online.target
 
@@ -14,9 +19,16 @@ Wants=network-online.target
 Type=simple
 User=syncwell
 Group=syncwell
-EnvironmentFile=-/etc/syncwell.env
+# The shipped proxy configs are one hop in front of Syncwell and set
+# X-Forwarded-For; keep client IP rate limits per-client rather than shared.
+# Set these to false in /etc/syncwell.env if you run without a proxy.
+Environment=SYNCWELL_TRUST_PROXY=true
+Environment=SYNCWELL_PROXY_HOPS=1
+EnvironmentFile=/etc/syncwell.env
 ExecStart=/usr/local/bin/syncwell \
   -addr 127.0.0.1:8080 \
+  -require-auth \
+  -require-origins \
   -data /var/lib/syncwell \
   -static /usr/share/syncwell/demo \
   -sdk /usr/share/syncwell/sdk

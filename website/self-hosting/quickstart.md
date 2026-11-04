@@ -5,7 +5,7 @@
 Until the GHCR image is published with a release, build it locally:
 
 ```bash
-git clone https://github.com/Nil-Vaghani/syncwell && cd syncwell
+git clone https://github.com/syncwell-labs/syncwell && cd syncwell
 make docker                                   # tags syncwell:latest
 mkdir -p data && sudo chown 65532:65532 data  # the image runs as uid 65532
 docker run --rm -p 8080:8080 \
@@ -16,8 +16,8 @@ docker run --rm -p 8080:8080 \
   -data /data
 ```
 
-When releases are live the same command works with
-`ghcr.io/nil-vaghani/syncwell:latest` instead of `syncwell:latest`.
+After the 0.5.0 image is published under the new owner, the same command works
+with `ghcr.io/syncwell-labs/syncwell:0.5.0` instead of `syncwell:latest`.
 
 The runtime image is distroless and runs as a non-root user. Mount `/data` as a
 writable volume owned by uid/gid `65532` (the image's `nonroot` user).
@@ -29,7 +29,8 @@ cp .env.example .env
 # fill SYNCWELL_SECRET and SYNCWELL_ADMIN_TOKEN (openssl rand -hex 32)
 docker compose up -d --build
 docker compose run --rm syncwell -mint demo   # room token for the demo pages
-# open http://localhost:8080/?room=demo&token=<token>
+# Demo-only bundled-page URL (do not use this token carrier in SDK clients):
+# http://localhost:8080/?room=demo&token=<token>
 ```
 
 ## Binary or Go
@@ -55,7 +56,8 @@ syncwell -tls-cert /etc/letsencrypt/live/HOST/fullchain.pem \
          -tls-key  /etc/letsencrypt/live/HOST/privkey.pem
 ```
 
-TLS 1.2+ and HTTP/2 are enabled. Certificate issuance/renewal stays with your
+TLS 1.3 and HTTP/2 are enabled by default. Set `-tls-min=1.2` only when legacy
+clients require TLS 1.2. Certificate issuance/renewal stays with your
 proxy or ACME client.
 
 ## Verify

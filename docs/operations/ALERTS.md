@@ -18,8 +18,9 @@ scrape_configs:
 ```
 
 Import the dashboard and pick the Prometheus datasource when prompted. Panels
-cover room/client counts, apply latency p50/p95/p99, frame sizes, message
-rates, per-room GC low-water, and cluster relay health.
+cover aggregate room/client counts, apply latency p50/p95/p99, frame sizes,
+message rates, process saturation, and cluster relay health. Metric labels do
+not include room IDs, client IDs, or document keys.
 
 ## Metrics reference
 
@@ -29,10 +30,17 @@ rates, per-room GC low-water, and cluster relay health.
 | `syncwell_clients_total` | gauge | Connected clients across rooms |
 | `syncwell_live_registers_total` | gauge | Live registers |
 | `syncwell_tombstones_total` | gauge | Deleted registers awaiting GC |
-| `syncwell_room_clients{room}` | gauge | Clients per room |
-| `syncwell_room_live{room}` | gauge | Live registers per room |
-| `syncwell_room_tombstones{room}` | gauge | Tombstones per room |
-| `syncwell_room_low_water{room}` | gauge | GC low-water clock per room |
+| `syncwell_rooms_low_water_stuck` | gauge | Rooms with clients and no advancing acknowledgement watermark |
+| `syncwell_connections_current` / `_limit` | gauge | Current sockets and process limit |
+| `syncwell_connection_rejects_total` | counter | Sockets rejected by the connection budget |
+| `syncwell_open_log_files` / `syncwell_open_log_bytes` | gauge | Persistent log descriptors and log bytes |
+| `syncwell_process_open_fds` / `_fd_limit` | gauge | Process descriptors and soft limit (Linux; zero elsewhere) |
+| `syncwell_goroutines` / `syncwell_heap_bytes` | gauge | Go runtime goroutines and heap allocation |
+| `syncwell_gomemlimit_bytes` | gauge | Runtime `GOMEMLIMIT` (zero means unlimited) |
+| `syncwell_cluster_relay_duration_seconds{peer}` | histogram | Relay delivery latency by configured peer |
+| `syncwell_cluster_relay_errors_total{peer,reason}` | counter | Relay failures by configured peer and bounded reason |
+| `syncwell_anti_entropy_bytes_total` | counter | Bytes sent in full-snapshot anti-entropy |
+| `syncwell_compaction_failures_total` | counter | Failed room-log compactions |
 | `syncwell_apply_duration_seconds` | histogram | Merge + persist time per register |
 | `syncwell_inbound_frame_bytes` | histogram | Client message size |
 | `syncwell_outbound_frame_bytes` | histogram | Per-client message size |
@@ -47,8 +55,7 @@ rates, per-room GC low-water, and cluster relay health.
   - unexpected client growth or a leaked reconnect loop
 - `syncwell_tombstones_total` rising steadily
   - GC may be stalled or reconnect leases may be too conservative
-- `syncwell_room_low_water{room=...} == 0` for long periods while the room is
-  active
+- `syncwell_rooms_low_water_stuck > 0` for long periods
   - clients are not advancing their acknowledgements
 
 ## Cluster health
@@ -77,6 +84,16 @@ earlier counters:
   stalls.
 - `SyncwellClusterPeerDown`, `SyncwellClusterRelayErrors`,
   `SyncwellClusterDrops`, `SyncwellClusterRelayBacklog`.
+- `SyncwellFileDescriptorsHigh`, `SyncwellHeapNearMemoryLimit`,
+  `SyncwellConnectionRejects`, and `SyncwellCompactionFailures` cover process
+  saturation and persistence health.
+- `SyncwellRedisLeaseLoss` and `SyncwellRedisStreamErrors` are critical in
+  experimental Redis mode; `SyncwellRedisReplaySlow` warns when replay p95 is
+  above five seconds. These signals have no room labels.
+
+Set `GOMEMLIMIT` below the container memory limit to leave room for stacks,
+runtime metadata, and non-Go allocations. The dashboard compares heap against
+the configured runtime limit; the binary does not set this value.
 
 ## Operational follow-up
 

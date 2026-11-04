@@ -119,10 +119,10 @@ go run ./cmd/syncwell -addr 127.0.0.1:8080
 
 Import the client from the served `clients/javascript/` directory or `npm install
 syncwell-client`, or read the
-[self-hosting guide](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/operations/DEPLOY.md).
+[self-hosting guide](https://github.com/syncwell-labs/syncwell/blob/main/docs/operations/DEPLOY.md).
 
 Code, design notes, and the test suite that proves all of the above:
-**https://github.com/Nil-Vaghani/syncwell**.
+**https://github.com/syncwell-labs/syncwell**.
 
 Feedback is most welcome on the GC low-water-mark approach, the offline conflict
 semantics, and the sequence-CRDT interleaving rules.

@@ -1,69 +1,55 @@
-# Service level objectives
+# Syncwell service objectives and runbook
 
-These are the targets Syncwell is designed and tested against for a **single
-node**. They are engineering SLOs, not a commercial SLA; multi-region
-deployments and per-tenant fairness are out of scope (see the
-[threat model](./THREAT_MODEL.md)).
-
-Reference host used for the published numbers: Linux x86-64, 16 vCPU, 13 GiB
-RAM, loopback networking, in-memory store. Your disk and network will dominate
-once persistence or TLS is enabled.
+These initial objectives apply to one production Syncwell process. Collect
+`/metrics` through Prometheus using the admin authorization header; never put
+the admin token in a URL. They are operating targets, not a contractual SLA.
 
 ## Objectives
 
-| Area | SLI | SLO | Budget basis (30 days) |
-| --- | --- | --- | --- |
-| Availability | `up{job="syncwell"}` / `/healthz` success | 99.9% | 43m 12s downtime |
-| WebSocket admission | Authorized `/ws` upgrades that succeed (non-5xx) | 99.9% | 43m 12s of failed admissions |
-| Apply latency | `syncwell_apply_duration_seconds` p95 | ≤ 25 ms | ≤ 1% of 5-minute windows over target |
-| Apply tail | `syncwell_apply_duration_seconds` p99 | ≤ 250 ms | ≤ 1% of 5-minute windows over target |
-| End-to-end fan-out | publish → receive p95, 10k clients | ≤ 100 ms | ≤ 1% of 5-minute windows over target |
-| Durability (fsync=every) | Acknowledged writes lost on power loss | 0 | no loss permitted |
-| Durability (fsync=batch) | Acknowledged writes lost in the last 5 ms | ≤ 5 ms window | planned, documented |
-| Cluster convergence | State convergence after peer recovery | ≤ 60 s p95 | ≤ 1% of 5-minute windows over target |
-| Memory | Server RSS with 10k clients / 100 rooms | ≤ 512 MiB | none (capacity guard) |
-| Capacity | Sustained fan-out on the reference host | ≥ 100k msg/s | none (capacity guard) |
+| Objective | Target | Measurement |
+| --- | --- | --- |
+| Process scrape availability | 99.9% over 30 days | `avg_over_time(up{job="syncwell"}[30d])` |
+| Register apply latency | p95 below 25 ms and p99 below 250 ms in 5 minute windows | `syncwell_apply_duration_seconds_bucket` |
+| Connection capacity | No sustained connection-budget rejects | `increase(syncwell_connection_rejects_total[5m])` |
+| File descriptor headroom | Stay below 80% of the process soft limit | `syncwell_process_open_fds / syncwell_process_fd_limit` |
+| Heap headroom | Stay below 80% of `GOMEMLIMIT`, when configured | `syncwell_heap_bytes / syncwell_gomemlimit_bytes` |
+| Persistence health | No compaction failures; acknowledged writes remain durable per configured fsync mode | `syncwell_compaction_failures_total`, `room_persist_error`, and restart/restore drills |
+| Relay health (cluster deployments) | No sustained peer failures or drops | `syncwell_cluster_peer_up`, `syncwell_cluster_relay_errors_total{peer,reason}`, `syncwell_cluster_relay_dropped_total` |
+| Redis ownership (experimental) | No lease loss; replay p95 < 5 s | `syncwell_redis_lease_losses_total`, `syncwell_redis_stream_errors_total`, `syncwell_redis_replay_duration_seconds` |
 
-## How to measure
+The scrape objective measures whether Prometheus can reach `/metrics`; it does
+not prove every WebSocket session works. Use browser and restore drills to
+cover client behavior and persistence. Relay and anti-entropy objectives apply
+only when peers are configured.
 
-```promql
-# Availability over the month
-avg_over_time(up{job="syncwell"}[30d])
+## Runbook
 
-# Apply latency
-histogram_quantile(0.95, sum(rate(syncwell_apply_duration_seconds_bucket[5m])) by (le))
-histogram_quantile(0.99, sum(rate(syncwell_apply_duration_seconds_bucket[5m])) by (le))
+- **Connection rejects**: inspect `syncwell_connections_current` and
+  `syncwell_connections_limit`. Raise `-max-conns` / `SYNCWELL_MAX_CONNS` only
+  after checking host FD and memory headroom. The limit is process-wide; also
+  check `-max-clients` per room.
+- **FD alert**: inspect `syncwell_process_open_fds`, `syncwell_open_log_files`,
+  and the OS soft limit. Raise `ulimit -n`/service `LimitNOFILE`, then check
+  whether idle rooms close descriptors and whether clients are reconnecting.
+- **Heap alert**: compare `syncwell_heap_bytes` to `syncwell_gomemlimit_bytes`,
+  check room/client counts, and set `GOMEMLIMIT` below the container limit to
+  reserve space for stacks and non-Go allocations.
+- **Persistence/compaction error**: inspect disk space, permissions, and
+  `-fsync` policy. `room_persist_error` means a winning write was rejected;
+  `room_compact_error` means logs may grow until compaction succeeds. Verify the
+  latest encrypted backup before maintenance.
+- **Shutdown incomplete**: inspect `shutdown_incomplete` room counts and
+  `shutdown_room_flush_error`; increase `-shutdown-timeout` only if the process
+  manager grants the same termination grace period.
+- **Room command queue full / WebSocket 1013**: clients should reconnect with
+  backoff. Check `syncwell_command_queue_rejects_total`, goroutine/heap load,
+  and slow storage. Do not increase queue depth as the first response.
+- **Retention candidates**: begin with `-retention-dry-run`; review
+  `retention_would_purge`, then enable `-retention` only after the window and
+  backup restore are confirmed.
+- **Relay peer down/errors**: check the peer URL, TLS, admin token, and network;
+  inspect latency/error reason labels. Full-state anti-entropy remains the
+  recovery path; `syncwell_anti_entropy_bytes_total` shows its traffic.
 
-# Fan-out throughput
-sum(rate(syncwell_outbound_frame_bytes_count[5m]))
-
-# Memory (from the host, not Prometheus)
-grep VmRSS /proc/$(pgrep -f 'syncwell -addr')/status
-```
-
-Alerts for these objectives ship in
-[`deploy/monitoring/prometheus/syncwell-rules.yml`](../../deploy/monitoring/prometheus/syncwell-rules.yml).
-Load methodology and measured results are in [LOAD_TEST.md](./LOAD_TEST.md).
-
-## Durability semantics
-
-- `-fsync every`: every accepted write is synced before it is acknowledged.
-  No acknowledged write is lost to power loss.
-- `-fsync batch` (default): writes are acknowledged after the append and synced
-  every 5 ms. A power loss can lose the last few milliseconds of acknowledged
-  writes. Replication does not change this window on a node.
-- `-fsync os`: the OS decides when to flush; suitable only for caches and
-  development.
-
-Back up with `-backup` (checksummed manifest) and test restores with
-`-verify-backup`; see [RESTORE_DRILL.md](./RESTORE_DRILL.md).
-
-## Error budget policy
-
-- At 75% budget consumed: feature work pauses; prioritize reliability fixes.
-- At 100%: only reliability/security changes ship until the budget recovers.
-- Availability budgets exclude announced maintenance windows; apply-latency
-  budgets do not.
-- Cluster convergence is best-effort eventual consistency: anti-entropy runs
-  every 30 s by default (`-anti-entropy`), so RPO is bounded by that interval,
-  not zero.
+See [alerts and dashboards](./ALERTS.md), [operations](./OPERATIONS.md), and
+[deployment flags](./DEPLOY.md) for the matching metric names and configuration.

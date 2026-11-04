@@ -45,6 +45,73 @@ func TestAppendAndLoad(t *testing.T) {
 	}
 }
 
+func TestMetadataAndDelete(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append("room/name", Record{Key: "k", Reg: reg("v", 1, "n")}); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := s.RoomMetadata()
+	if err != nil || len(meta) != 1 || meta[0].Room != "room/name" {
+		t.Fatalf("metadata=%+v err=%v", meta, err)
+	}
+	path := s.metadataPath("room/name")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("metadata permissions = %o", info.Mode().Perm())
+	}
+	if err := s.Delete("room/name"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Load("room/name"); err != nil || len(got) != 0 {
+		t.Fatalf("Load after delete = %v, %v", got, err)
+	}
+	if err := s.Delete("room/name"); err != nil {
+		t.Fatalf("delete should be idempotent: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("metadata remains: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloseRoomKeepsLogAndUpdatesPersistenceStats(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Append("room", Record{Key: "k", Reg: reg("v", 1, "n")}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := s.Stats()
+	if err != nil || stats.OpenFiles != 1 || stats.OpenLogs != 1 || stats.Bytes == 0 {
+		t.Fatalf("open stats=%+v err=%v", stats, err)
+	}
+	if err := s.CloseRoom("room"); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = s.Stats()
+	if err != nil || stats.OpenFiles != 0 || stats.OpenLogs != 1 || stats.Bytes == 0 {
+		t.Fatalf("closed stats=%+v err=%v", stats, err)
+	}
+	if err := s.Append("room", Record{Key: "next", Reg: reg("v2", 2, "n")}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = s.Stats()
+	if err != nil || stats.OpenFiles != 1 {
+		t.Fatalf("reopened stats=%+v err=%v", stats, err)
+	}
+}
+
 func TestCompactPreservesState(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)
@@ -192,13 +259,13 @@ func TestLoadMigratesBase64RoomPath(t *testing.T) {
 
 func TestLoadMigratesLegacyRoomPath(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir)
+	s, err := OpenWithOptions(dir, Options{MigrateLegacyV1: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 
-	room := "legacy/room"
+	room := "legacy-room"
 	legacy := s.legacyPath(room)
 	line, err := json.Marshal(Record{Key: "title", Reg: reg("migrated", 1, "A")})
 	if err != nil {
@@ -216,5 +283,95 @@ func TestLoadMigratesLegacyRoomPath(t *testing.T) {
 	}
 	if _, err := os.Stat(s.path(room)); err != nil {
 		t.Fatalf("v2 path was not written: %v", err)
+	}
+}
+
+func TestLoadRequiresOptInForLegacyRoomPath(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	line, _ := json.Marshal(Record{Key: "title", Reg: reg("legacy", 1, "A")})
+	if err := os.WriteFile(s.legacyPath("legacy-room"), append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Load("legacy-room"); err == nil {
+		t.Fatal("legacy layout was imported without explicit opt-in")
+	}
+}
+
+func TestLoadRejectsAmbiguousLegacyRoomPath(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// "a/b" and "a_b" both sanitize to "a_b.log" in the v1 layout. Without
+	// rejecting the ambiguous room, either could read the other's history.
+	line, err := json.Marshal(Record{Key: "title", Reg: reg("secret", 1, "A")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.legacyPath("a/b"), append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Load("a/b"); err == nil {
+		t.Fatal("ambiguous legacy room was migrated")
+	}
+}
+
+func TestLoadWithLimitsRejectsOversizedPersistedState(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		key := string(rune('a' + i))
+		if err := s.Append("r", Record{Key: key, Reg: reg("value", uint64(i+1), "A")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	if _, err := s2.LoadWithLimits("r", LoadLimits{MaxEntries: 3}); err == nil {
+		t.Fatal("LoadWithLimits accepted more entries than allowed")
+	}
+	if _, err := s2.LoadWithLimits("r", LoadLimits{MaxBytes: 32}); err == nil {
+		t.Fatal("LoadWithLimits accepted more bytes than allowed")
+	}
+	if _, err := s2.LoadWithLimits("r", LoadLimits{MaxValueBytes: 2}); err == nil {
+		t.Fatal("LoadWithLimits accepted an oversized value")
+	}
+	if _, err := s2.LoadWithLimits("r", LoadLimits{MaxKeyBytes: 0, MaxValueBytes: 1024, MaxEntries: 10, MaxBytes: 1 << 20}); err != nil {
+		t.Fatalf("valid limits rejected: %v", err)
+	}
+}
+
+func TestLoadWithLimitsRejectsImpossibleRegisters(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append("r", Record{Key: "k", Reg: crdt.Register{Value: json.RawMessage(`"x"`), TS: crdt.Timestamp{Counter: 1, Node: ""}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s2, _ := Open(dir)
+	defer s2.Close()
+	if _, err := s2.LoadWithLimits("r", LoadLimits{MaxNodeBytes: 64}); err == nil {
+		t.Fatal("LoadWithLimits accepted a record with an empty node id")
 	}
 }

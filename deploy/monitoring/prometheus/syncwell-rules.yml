@@ -51,12 +51,12 @@ groups:
   - name: syncwell-correctness
     rules:
       - alert: SyncwellLowWaterStuck
-        expr: max by (room) (syncwell_room_low_water) == 0 and on (room) max by (room) (syncwell_room_clients) > 0
+        expr: syncwell_rooms_low_water_stuck > 0
         for: 30m
         labels:
           severity: warning
         annotations:
-          summary: Room {{ $labels.room }} is not advancing its GC low-water mark
+          summary: One or more rooms are not advancing their GC low-water mark
           description: Clients are connected but not acknowledging. Tombstones will accumulate.
 
       - alert: SyncwellTombstoneGrowth
@@ -105,3 +105,70 @@ groups:
         annotations:
           summary: Sustained cluster relay backlog
           description: Peers are slow or unreachable; outbound events are accumulating.
+
+  - name: syncwell-saturation
+    rules:
+      - alert: SyncwellFileDescriptorsHigh
+        expr: syncwell_process_fd_limit > 0 and syncwell_process_open_fds / syncwell_process_fd_limit > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Syncwell is using over 80% of its file descriptor limit
+          description: Raise the process limit or reduce active files and connections.
+
+      - alert: SyncwellHeapNearMemoryLimit
+        expr: syncwell_gomemlimit_bytes > 0 and syncwell_heap_bytes / syncwell_gomemlimit_bytes > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Syncwell heap is near GOMEMLIMIT
+          description: Review room sizes, client load, and the container memory budget.
+
+      - alert: SyncwellConnectionRejects
+        expr: increase(syncwell_connection_rejects_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Syncwell is rejecting connections at its configured limit
+          description: Check current connection usage and raise -max-conns if capacity allows.
+
+      - alert: SyncwellCompactionFailures
+        expr: increase(syncwell_compaction_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Room log compaction is failing
+          description: Check disk capacity, permissions, and persistence errors immediately.
+
+  - name: syncwell-redis-ownership
+    rules:
+      - alert: SyncwellRedisLeaseLoss
+        expr: increase(syncwell_redis_lease_losses_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis room ownership lease was lost
+          description: The owner stopped accepting writes and disconnected room clients; inspect Redis reachability and failover fencing.
+
+      - alert: SyncwellRedisStreamErrors
+        expr: increase(syncwell_redis_stream_errors_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis stream or snapshot operation failed
+          description: Writes fail closed on Redis errors. Check Redis health, ACLs, and stream recovery state.
+
+      - alert: SyncwellRedisReplaySlow
+        expr: histogram_quantile(0.95, sum(rate(syncwell_redis_replay_duration_seconds_bucket[10m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Redis room replay p95 exceeds five seconds
+          description: Owner re-homing is delayed. Check snapshot cadence, stream length, Redis latency, and node CPU.

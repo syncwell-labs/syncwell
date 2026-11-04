@@ -9,8 +9,9 @@ class FakeWebSocket {
   static last = null;
   static instances = [];
 
-  constructor(url) {
+  constructor(url, protocols) {
     this.url = url;
+    this.protocols = protocols;
     this.readyState = FakeWebSocket.OPEN;
     this.sent = [];
     FakeWebSocket.last = this;
@@ -24,6 +25,10 @@ class FakeWebSocket {
   close() {
     this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.();
+  }
+
+  fail() {
+    this.onerror?.();
   }
 }
 
@@ -39,9 +44,10 @@ class MemoryStorage {
   }
 }
 
-test("constructor appends room and token without breaking existing query params", () => {
+test("constructor appends room and token (query mode) without breaking existing query params", () => {
   const sw = new Syncwell("ws://localhost:8080/ws?debug=1", "team/a", {
     token: "exp.sig",
+    tokenTransport: "query",
     WebSocket: FakeWebSocket,
   });
 
@@ -51,6 +57,55 @@ test("constructor appends room and token without breaking existing query params"
   assert.equal(url.searchParams.get("debug"), "1");
   assert.equal(url.searchParams.get("room"), "team/a");
   assert.equal(url.searchParams.get("token"), "exp.sig");
+  sw.close();
+});
+
+test("default subprotocol transport keeps the token out of the URL", () => {
+  const sw = new Syncwell("ws://localhost:8080/ws", "team/a", {
+    token: "exp.sig",
+    WebSocket: FakeWebSocket,
+  });
+
+  sw.connect();
+
+  const url = new URL(FakeWebSocket.last.url);
+  assert.equal(url.searchParams.get("token"), null);
+  assert.deepEqual(FakeWebSocket.last.protocols, ["syncwell", "syncwell.token.exp.sig"]);
+  sw.close();
+});
+
+test("followOwner resolves the room route before opening the WebSocket", async () => {
+  let routeURL;
+  const sw = new Syncwell("ws://seed.example/ws", "room/one", {
+    followOwner: true,
+    token: "secret-token",
+    WebSocket: FakeWebSocket,
+    fetch: async (url) => {
+      routeURL = new URL(url);
+      return { ok: true, status: 200, json: async () => ({ node: "node-b", url: "wss://owner.example/ws" }) };
+    },
+  });
+  sw.connect();
+  await sw._routePromise;
+  assert.equal(routeURL.pathname, "/route");
+  assert.equal(routeURL.searchParams.get("room"), "room/one");
+  const wsURL = new URL(FakeWebSocket.last.url);
+  assert.equal(wsURL.host, "owner.example");
+  assert.equal(wsURL.searchParams.get("room"), "room/one");
+  assert.equal(wsURL.searchParams.has("token"), false);
+  sw.close();
+});
+
+test("reconnects when a WebSocket errors without emitting close", async () => {
+  FakeWebSocket.instances = [];
+  const sw = new Syncwell("ws://localhost:8080/ws", "room", { WebSocket: FakeWebSocket });
+  sw.connect();
+  const first = FakeWebSocket.last;
+  first.fail();
+  assert.equal(sw.ws, null);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.notEqual(FakeWebSocket.last, first);
+  assert.equal(FakeWebSocket.instances.length, 2);
   sw.close();
 });
 

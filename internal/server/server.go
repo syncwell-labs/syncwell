@@ -1,29 +1,38 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"syncwell/internal/crdt"
+	"syncwell/internal/store"
 
 	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
-	// Dev default: accept any origin. Lock this down behind an all‑list in
-	// production (see docs/product/ROADMAP.md → auth hooks).
-	CheckOrigin: func(*http.Request) bool { return true },
+	// OriginPolicy is enforced explicitly before Upgrade; gorilla's own check is
+	// disabled so the policy can also reject missing Origin headers.
+	CheckOrigin:      func(*http.Request) bool { return true },
+	HandshakeTimeout: 10 * time.Second,
 }
 
 const (
@@ -39,6 +48,9 @@ const (
 	maxPresenceSize = 64 * 1024
 	maxStateEntries = 10000
 	maxMessagesRate = 120
+	maxDocEntries   = 100000
+	maxDocBytes     = 16 << 20 // 16 MiB approximate in-memory document cap
+	maxSendBytes    = 4 << 20  // 4 MiB queued outbound bytes per client
 )
 
 // Limits bounds untrusted client input. Any zero field is replaced with the
@@ -52,6 +64,9 @@ type Limits struct {
 	MaxPresenceBytes     int
 	MaxStateEntries      int
 	MaxMessagesPerSecond int
+	MaxDocEntries        int   // total registers (incl. tombstones) per room
+	MaxDocBytes          int64 // approximate in-memory bytes per room
+	MaxSendBytes         int64 // queued outbound bytes per client
 }
 
 func (l Limits) withDefaults() Limits {
@@ -79,6 +94,15 @@ func (l Limits) withDefaults() Limits {
 	if l.MaxMessagesPerSecond <= 0 {
 		l.MaxMessagesPerSecond = maxMessagesRate
 	}
+	if l.MaxDocEntries <= 0 {
+		l.MaxDocEntries = maxDocEntries
+	}
+	if l.MaxDocBytes <= 0 {
+		l.MaxDocBytes = maxDocBytes
+	}
+	if l.MaxSendBytes <= 0 {
+		l.MaxSendBytes = maxSendBytes
+	}
 	return l
 }
 
@@ -89,8 +113,15 @@ func (h *Hub) ServeStats(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	stats, ok := h.StatsContext(ctx)
+	if !ok {
+		http.Error(w, "stats timeout", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(h.Stats())
+	_ = json.NewEncoder(w).Encode(stats)
 }
 
 // ServeMetrics writes a tiny Prometheus-style text snapshot of the current room
@@ -100,32 +131,109 @@ func (h *Hub) ServeMetrics(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	stats := h.Stats()
+	ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+	defer cancel()
+	stats, ok := h.StatsContext(ctx)
+	if !ok {
+		http.Error(w, "stats timeout", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	fmt.Fprintln(w, "# HELP syncwell_rooms Number of open rooms")
 	fmt.Fprintln(w, "# TYPE syncwell_rooms gauge")
 	fmt.Fprintf(w, "syncwell_rooms %d\n", len(stats))
 	fmt.Fprintln(w, "# HELP syncwell_clients_total Total connected clients across rooms")
 	fmt.Fprintln(w, "# TYPE syncwell_clients_total gauge")
-	var clients, live, tombstones uint64
+	var clients, live, tombstones, lowWaterStuck uint64
 	for _, s := range stats {
 		clients += uint64(s.Clients)
 		live += uint64(s.Live)
 		tombstones += uint64(s.Tombstones)
+		if s.Clients > 0 && s.LowWater == 0 {
+			lowWaterStuck++
+		}
 	}
 	fmt.Fprintf(w, "syncwell_clients_total %d\n", clients)
 	fmt.Fprintf(w, "syncwell_live_registers_total %d\n", live)
 	fmt.Fprintf(w, "syncwell_tombstones_total %d\n", tombstones)
-	for room, s := range stats {
-		fmt.Fprintf(w, "syncwell_room_clients{room=%q} %d\n", room, s.Clients)
-		fmt.Fprintf(w, "syncwell_room_live{room=%q} %d\n", room, s.Live)
-		fmt.Fprintf(w, "syncwell_room_tombstones{room=%q} %d\n", room, s.Tombstones)
-		fmt.Fprintf(w, "syncwell_room_low_water{room=%q} %d\n", room, s.LowWater)
+	fmt.Fprintln(w, "# HELP syncwell_rooms_low_water_stuck Rooms with clients and no acknowledgement watermark")
+	fmt.Fprintln(w, "# TYPE syncwell_rooms_low_water_stuck gauge")
+	fmt.Fprintf(w, "syncwell_rooms_low_water_stuck %d\n", lowWaterStuck)
+	fmt.Fprintln(w, "# HELP syncwell_connections_current Current admitted WebSocket connections")
+	fmt.Fprintln(w, "# TYPE syncwell_connections_current gauge")
+	fmt.Fprintf(w, "syncwell_connections_current %d\n", h.connectionsCurrent.Load())
+	fmt.Fprintln(w, "# HELP syncwell_connections_limit Process-wide WebSocket connection limit (0 means unlimited)")
+	fmt.Fprintln(w, "# TYPE syncwell_connections_limit gauge")
+	fmt.Fprintf(w, "syncwell_connections_limit %d\n", h.cfg.MaxConns)
+	fmt.Fprintln(w, "# HELP syncwell_connection_rejects_total WebSocket connections rejected by the process-wide limit")
+	fmt.Fprintln(w, "# TYPE syncwell_connection_rejects_total counter")
+	fmt.Fprintf(w, "syncwell_connection_rejects_total %d\n", h.connectionRejects.Load())
+	fmt.Fprintln(w, "# HELP syncwell_command_queue_rejects_total Commands rejected because room queues were full")
+	fmt.Fprintln(w, "# TYPE syncwell_command_queue_rejects_total counter")
+	fmt.Fprintf(w, "syncwell_command_queue_rejects_total %d\n", h.commandQueueRejects.Load())
+	fmt.Fprintln(w, "# HELP syncwell_token_in_query_total WebSocket requests carrying a room token in the query string")
+	fmt.Fprintln(w, "# TYPE syncwell_token_in_query_total counter")
+	fmt.Fprintf(w, "syncwell_token_in_query_total %d\n", h.tokenInQuery.Load())
+	if persistence, ok := h.cfg.Store.(interface {
+		Stats() (store.Stats, error)
+	}); ok {
+		if ps, err := persistence.Stats(); err == nil {
+			fmt.Fprintln(w, "# HELP syncwell_open_log_files Open room-log append descriptors")
+			fmt.Fprintln(w, "# TYPE syncwell_open_log_files gauge")
+			fmt.Fprintf(w, "syncwell_open_log_files %d\n", ps.OpenFiles)
+			fmt.Fprintln(w, "# HELP syncwell_open_log_bytes Total persistent room-log bytes")
+			fmt.Fprintln(w, "# TYPE syncwell_open_log_bytes gauge")
+			fmt.Fprintf(w, "syncwell_open_log_bytes %d\n", ps.Bytes)
+		}
 	}
+	openFDs, fdLimit := processFDStats()
+	fmt.Fprintln(w, "# HELP syncwell_process_open_fds Process open file descriptors (Linux; 0 elsewhere)")
+	fmt.Fprintln(w, "# TYPE syncwell_process_open_fds gauge")
+	fmt.Fprintf(w, "syncwell_process_open_fds %d\n", openFDs)
+	fmt.Fprintln(w, "# HELP syncwell_process_fd_limit Process soft file descriptor limit (Linux; 0 elsewhere)")
+	fmt.Fprintln(w, "# TYPE syncwell_process_fd_limit gauge")
+	fmt.Fprintf(w, "syncwell_process_fd_limit %d\n", fdLimit)
+	fmt.Fprintln(w, "# HELP syncwell_goroutines Current Go goroutine count")
+	fmt.Fprintln(w, "# TYPE syncwell_goroutines gauge")
+	fmt.Fprintf(w, "syncwell_goroutines %d\n", runtime.NumGoroutine())
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	fmt.Fprintln(w, "# HELP syncwell_heap_bytes Current Go heap allocation")
+	fmt.Fprintln(w, "# TYPE syncwell_heap_bytes gauge")
+	fmt.Fprintf(w, "syncwell_heap_bytes %d\n", mem.HeapAlloc)
+	fmt.Fprintln(w, "# HELP syncwell_gomemlimit_bytes Go runtime memory limit (0 when unlimited)")
+	fmt.Fprintln(w, "# TYPE syncwell_gomemlimit_bytes gauge")
+	memLimit := debug.SetMemoryLimit(-1)
+	if memLimit < 0 {
+		memLimit = 0
+	}
+	fmt.Fprintf(w, "syncwell_gomemlimit_bytes %d\n", memLimit)
+	fmt.Fprintln(w, "# HELP syncwell_compaction_failures_total Room snapshot compaction failures")
+	fmt.Fprintln(w, "# TYPE syncwell_compaction_failures_total counter")
+	fmt.Fprintf(w, "syncwell_compaction_failures_total %d\n", h.compactionFailures.Load())
+	fmt.Fprintln(w, "# HELP syncwell_anti_entropy_bytes_total Bytes sent in anti-entropy snapshots")
+	fmt.Fprintln(w, "# TYPE syncwell_anti_entropy_bytes_total counter")
+	fmt.Fprintf(w, "syncwell_anti_entropy_bytes_total %d\n", h.antiEntropyBytes.Load())
 
 	h.metrics.applyDuration.write(w, "syncwell_apply_duration_seconds", "Time to merge and persist one register (local, merge, or cluster write)")
 	h.metrics.inboundFrameBytes.write(w, "syncwell_inbound_frame_bytes", "WebSocket message size received from clients")
 	h.metrics.outboundFrameBytes.write(w, "syncwell_outbound_frame_bytes", "WebSocket message size sent to each client")
+	h.metrics.redisReplay.write(w, "syncwell_redis_replay_duration_seconds", "Redis snapshot load and ordered stream replay duration")
+	fmt.Fprintln(w, "# HELP syncwell_redis_leases_current Redis room leases currently held by this process")
+	fmt.Fprintln(w, "# TYPE syncwell_redis_leases_current gauge")
+	fmt.Fprintf(w, "syncwell_redis_leases_current %d\n", h.redisLeasesCurrent.Load())
+	fmt.Fprintln(w, "# HELP syncwell_redis_lease_acquired_total Redis room leases acquired")
+	fmt.Fprintln(w, "# TYPE syncwell_redis_lease_acquired_total counter")
+	fmt.Fprintf(w, "syncwell_redis_lease_acquired_total %d\n", h.redisLeaseAcquired.Load())
+	fmt.Fprintln(w, "# HELP syncwell_redis_rehomes_total Rooms acquired after a prior fencing epoch")
+	fmt.Fprintln(w, "# TYPE syncwell_redis_rehomes_total counter")
+	fmt.Fprintf(w, "syncwell_redis_rehomes_total %d\n", h.redisRehomes.Load())
+	fmt.Fprintln(w, "# HELP syncwell_redis_lease_losses_total Redis room lease losses")
+	fmt.Fprintln(w, "# TYPE syncwell_redis_lease_losses_total counter")
+	fmt.Fprintf(w, "syncwell_redis_lease_losses_total %d\n", h.redisLeaseLosses.Load())
+	fmt.Fprintln(w, "# HELP syncwell_redis_stream_errors_total Redis stream, snapshot, or lease operation errors")
+	fmt.Fprintln(w, "# TYPE syncwell_redis_stream_errors_total counter")
+	fmt.Fprintf(w, "syncwell_redis_stream_errors_total %d\n", h.redisStreamErrors.Load())
 
 	fmt.Fprintln(w, "# HELP syncwell_cluster_node_info Identity of this node (always 1)")
 	fmt.Fprintln(w, "# TYPE syncwell_cluster_node_info gauge")
@@ -141,19 +249,19 @@ func (h *Hub) ServeMetrics(w http.ResponseWriter, req *http.Request) {
 		Metrics() (posted, dropped, errs, inflight uint64)
 	}
 	if rm, ok := h.relay.(relayMetrics); ok {
-		posted, dropped, errs, inflight := rm.Metrics()
+		posted, dropped, _, inflight := rm.Metrics()
 		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_posts_total Successful posts to peers")
 		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_posts_total counter")
 		fmt.Fprintf(w, "syncwell_cluster_relay_posts_total %d\n", posted)
-		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_errors_total Failed peer posts")
-		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_errors_total counter")
-		fmt.Fprintf(w, "syncwell_cluster_relay_errors_total %d\n", errs)
 		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_dropped_total Events dropped before delivery (queue full)")
 		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_dropped_total counter")
 		fmt.Fprintf(w, "syncwell_cluster_relay_dropped_total %d\n", dropped)
 		fmt.Fprintln(w, "# HELP syncwell_cluster_relay_inflight Events queued but not yet posted (lag proxy)")
 		fmt.Fprintln(w, "# TYPE syncwell_cluster_relay_inflight gauge")
 		fmt.Fprintf(w, "syncwell_cluster_relay_inflight %d\n", inflight)
+	}
+	if rm, ok := h.relay.(interface{ WritePeerMetrics(io.Writer) }); ok {
+		rm.WritePeerMetrics(w)
 	}
 
 	if h.webhooks != nil {
@@ -186,12 +294,20 @@ func (h *Hub) ServeMetrics(w http.ResponseWriter, req *http.Request) {
 // ServeClusterEvent ingests a cluster-event POST from a peer process and
 // delivers it to the matching local room, creating that room if necessary.
 func (h *Hub) ServeClusterEvent(w http.ResponseWriter, req *http.Request) {
+	if h.cfg.RedisRoomLog != nil {
+		http.NotFound(w, req)
+		return
+	}
 	if !h.Ready() {
 		http.Error(w, "shutting down", http.StatusServiceUnavailable)
 		return
 	}
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !originOK(req.Header.Get("Origin"), h.cfg.Origins) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
 	}
 	// Cluster events can inject writes/presence into any room, so a peer must
@@ -212,11 +328,150 @@ func (h *Hub) ServeClusterEvent(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := h.ingestClusterEvent(ev); err != nil {
-		LogEvent("cluster_ingest_error", map[string]any{"room": ev.Room, "kind": ev.Kind, "from": ev.From, "error": err.Error()})
+		LogRequestEvent(req, "cluster_ingest_error", map[string]any{"room": ev.Room, "kind": ev.Kind, "from": ev.From, "error": err.Error()})
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// ServeRoute returns the currently advertised WebSocket endpoint for a room.
+// In Redis mode the lease owner is authoritative; relay mode uses the static
+// planner. Callers must still handle an ownership change between routing and
+// the subsequent WebSocket handshake.
+func (h *Hub) ServeRoute(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	room := req.URL.Query().Get("room")
+	if room == "" {
+		room = "default"
+	}
+	if room == "*" || len(room) > h.cfg.Limits.MaxRoomIDBytes {
+		http.Error(w, "invalid room", http.StatusBadRequest)
+		return
+	}
+	owner := ""
+	if h.cfg.RedisRoomLog != nil {
+		ctx, cancel := context.WithTimeout(req.Context(), time.Second)
+		defer cancel()
+		found, err := h.cfg.RedisRoomLog.Owner(ctx, room)
+		if err == nil {
+			owner = found
+		} else if !errors.Is(err, redis.Nil) {
+			http.Error(w, "room route unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if owner == "" && h.planner != nil {
+		owner = h.planner.Owner(room)
+	}
+	if owner == "" {
+		owner = h.nodeID
+	}
+	endpoint := h.cfg.NodeAdvertise[owner]
+	if endpoint == "" && owner == h.nodeID {
+		endpoint = h.cfg.NodeAdvertise[h.nodeID]
+	}
+	if endpoint == "" {
+		http.Error(w, "room owner is not advertised", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Node string `json:"node"`
+		URL  string `json:"url"`
+	}{Node: owner, URL: endpoint})
+}
+
+// ServeClusterDigest answers a bounded per-register digest exchange request.
+// Oversized exchanges are marked for the caller's snapshot fallback.
+func (h *Hub) ServeClusterDigest(w http.ResponseWriter, req *http.Request) {
+	if h.cfg.RedisRoomLog != nil {
+		http.NotFound(w, req)
+		return
+	}
+	if !h.Ready() {
+		http.Error(w, "shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	if req.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !originOK(req.Header.Get("Origin"), h.cfg.Origins) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+	if !h.adminAllowed(req) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(req.Body, (1<<20)+1))
+	_ = req.Body.Close()
+	if err != nil || len(body) > 1<<20 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var digestReq clusterDigestRequest
+	if err := json.Unmarshal(body, &digestReq); err != nil || digestReq.Room == "" || digestReq.From == "" || len(digestReq.Digest) != 64 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if _, err := hex.DecodeString(digestReq.Digest); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	r, err := h.room(digestReq.Room)
+	if err != nil {
+		http.Error(w, "room unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	result := make(chan map[string]crdt.Register, 1)
+	select {
+	case r.cmds <- command{kind: "export", export: result}:
+	case <-r.done:
+		http.Error(w, "room closed", http.StatusServiceUnavailable)
+		return
+	case <-req.Context().Done():
+		return
+	default:
+		http.Error(w, "room busy", http.StatusServiceUnavailable)
+		return
+	}
+	select {
+	case local := <-result:
+		if local == nil {
+			http.Error(w, "room state unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		page := digestPage(local, digestReq.Cursor)
+		response := clusterDigestResponse{Digest: DigestRegisters(local)}
+		response.Entries = digestEntries(page)
+		for key, reg := range page {
+			if digestReq.Entries[key] != digestEntry(reg) {
+				response.Missing = ensureRegisterMap(response.Missing)
+				response.Missing[key] = reg
+			}
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil || len(encoded) > 1<<20 {
+			response = clusterDigestResponse{Digest: DigestRegisters(local), TooLarge: true}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	case <-r.done:
+		http.Error(w, "room closed", http.StatusServiceUnavailable)
+	case <-req.Context().Done():
+	}
+}
+
+func ensureRegisterMap(m map[string]crdt.Register) map[string]crdt.Register {
+	if m == nil {
+		return make(map[string]crdt.Register)
+	}
+	return m
 }
 
 // errClusterQueueFull means a room's command queue is saturated; the event is
@@ -311,9 +566,47 @@ func (h *Hub) adminAllowed(req *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(h.cfg.AdminToken)) == 1
 }
 
+// websocketToken extracts a room token without requiring it in the query
+// string. Precedence: Authorization: Bearer, then Sec-WebSocket-Protocol
+// ("syncwell.token.<token>"), then the legacy ?token= parameter. The returned
+// protocol value is echoed in the handshake response so standards-compliant
+// clients (including browsers) see their offered protocol accepted.
+func websocketToken(req *http.Request) (token, protocol string) {
+	if auth := req.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	}
+	selected := ""
+	for _, raw := range strings.Split(req.Header.Get("Sec-WebSocket-Protocol"), ",") {
+		p := strings.TrimSpace(raw)
+		switch {
+		case p == "syncwell":
+			selected = "syncwell"
+		case strings.HasPrefix(p, "syncwell.token."):
+			if token == "" {
+				token = strings.TrimPrefix(p, "syncwell.token.")
+			}
+			if selected == "" {
+				selected = p
+			}
+		}
+	}
+	if token == "" {
+		token = req.URL.Query().Get("token")
+	}
+	return strings.TrimSpace(token), selected
+}
+
 // ServeWS upgrades an HTTP request to a websocket and attaches it to the room
 // named by ?room=ID (default "default").
 func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Query().Get("token") != "" {
+		h.tokenInQuery.Add(1)
+		now := time.Now().UnixNano()
+		last := h.lastTokenQueryLog.Load()
+		if now-last >= int64(time.Minute) && h.lastTokenQueryLog.CompareAndSwap(last, now) {
+			LogRequestEvent(req, "ws_token_query_deprecated", map[string]any{"room": h.logRoomID(req.URL.Query().Get("room"))})
+		}
+	}
 	if !h.Ready() {
 		http.Error(w, "shutting down", http.StatusServiceUnavailable)
 		return
@@ -322,13 +615,20 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 	if roomID == "" {
 		roomID = "default"
 	}
+	// "*" is the admin-token scope, not a real collaboration room. Refuse it
+	// at the websocket edge so a wildcard OIDC token can never join a literal
+	// room named "*" and read every room's shared document.
+	if roomID == "*" {
+		http.Error(w, "invalid room", http.StatusBadRequest)
+		return
+	}
 	if len(roomID) > h.cfg.Limits.MaxRoomIDBytes {
 		http.Error(w, "room id too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	_, span := otel.Tracer("syncwell").Start(req.Context(), "ws.join",
 		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(attribute.String("syncwell.room", roomID)),
+		trace.WithAttributes(attribute.String("syncwell.room", h.logRoomID(roomID))),
 	)
 	defer span.End()
 	if h.planner != nil {
@@ -349,10 +649,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	// Room token (when a secret or OIDC is configured). Open dev mode gets full caps.
+	// Authorization and the Sec-WebSocket-Protocol carrier avoid putting
+	// credentials in the URL, where proxies and access logs would capture them.
+	token, wsProtocol := websocketToken(req)
 	var claims TokenClaims
 	if h.cfg.Secret != "" || h.cfg.OIDC != nil {
 		var ok bool
-		claims, ok = h.verifyToken(roomID, req.URL.Query().Get("token"), time.Now().Unix())
+		claims, ok = h.verifyToken(roomID, token, time.Now().Unix())
 		if !ok || !claims.Can(CapRead) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -372,34 +675,70 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "client id too large", http.StatusBadRequest)
 		return
 	}
+	if !h.acquireConnection() {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "connection capacity reached", http.StatusServiceUnavailable)
+		return
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			h.connectionsCurrent.Add(-1)
+		}
+	}()
 	room, err := h.room(roomID)
 	if err != nil {
+		if errors.Is(err, errRedisLeaseHeld) {
+			ctx, cancel := context.WithTimeout(req.Context(), time.Second)
+			owner, ownerErr := h.cfg.RedisRoomLog.Owner(ctx, roomID)
+			cancel()
+			if ownerErr == nil {
+				if endpoint := h.cfg.NodeAdvertise[owner]; endpoint != "" {
+					w.Header().Set("X-Syncwell-Owner", owner)
+					w.Header().Set("Location", endpoint)
+					w.WriteHeader(http.StatusMisdirectedRequest)
+					return
+				}
+			}
+		}
 		http.Error(w, "room capacity reached", http.StatusServiceUnavailable)
 		return
 	}
-	conn, err := upgrader.Upgrade(w, req, nil)
+	responseHeader := http.Header{}
+	if wsProtocol != "" {
+		responseHeader.Set("Sec-WebSocket-Protocol", wsProtocol)
+	}
+	conn, err := upgrader.Upgrade(w, req, responseHeader)
 	if err != nil {
 		span.SetStatus(codes.Error, "upgrade failed")
-		LogEvent("ws_upgrade_error", map[string]any{"error": err.Error(), "room": roomID})
+		LogRequestEvent(req, "ws_upgrade_error", map[string]any{"error": err.Error(), "room": h.logRoomID(roomID)})
 		return
 	}
 	span.SetAttributes(attribute.Int("syncwell.caps", len(claims.Caps)))
 	client := &Client{
-		id:     nextClientID(),
-		room:   room,
-		send:   make(chan []byte, 64),
-		claims: claims,
-		node:   nodeID,
-		delta:  req.URL.Query().Get("delta") == "1",
+		id:            nextClientID(),
+		room:          room,
+		send:          make(chan []byte, 64),
+		claims:        claims,
+		node:          nodeID,
+		delta:         req.URL.Query().Get("delta") == "1",
+		maxQueueBytes: h.cfg.Limits.MaxSendBytes,
+		hub:           h,
 	}
-	LogEvent("ws_join", map[string]any{
-		"room":      roomID,
+	reserved = false
+	LogRequestEvent(req, "ws_join", map[string]any{
+		"room":      h.logRoomID(roomID),
 		"client":    client.id,
 		"sub":       claims.Sub,
 		"caps":      claims.Caps,
 		"has_admin": claims.Can(CapAdmin),
 	})
-	room.cmds <- command{kind: "join", client: client}
+	if !enqueueRoomCommand(room, command{kind: "join", client: client}) {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "room is busy"), time.Now().Add(writeWait))
+		client.releaseConnection()
+		_ = conn.Close()
+		return
+	}
 	go client.writePump(conn)
 	go client.readPump(conn)
 }
@@ -409,10 +748,8 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 // enqueues a leave command and closes the socket.
 func (c *Client) readPump(conn *websocket.Conn) {
 	defer func() {
-		select {
-		case c.room.cmds <- command{kind: "leave", client: c}:
-		case <-c.room.done:
-		}
+		c.releaseConnection()
+		_ = enqueueRoomCommand(c.room, command{kind: "leave", client: c})
 		conn.Close()
 	}()
 	conn.SetReadLimit(int64(c.room.limits.MaxMessageBytes))
@@ -451,11 +788,40 @@ func (c *Client) readPump(conn *websocket.Conn) {
 		}
 		switch in.Type {
 		case "op", "merge", "hello":
-			c.room.cmds <- command{kind: in.Type, client: c, in: in}
+			if !enqueueRoomCommand(c.room, command{kind: in.Type, client: c, in: in}) {
+				c.closeBusy(conn)
+				return
+			}
 		case "presence", "ack":
-			c.room.cmds <- command{kind: in.Type, client: c, in: in}
+			if !enqueueRoomCommand(c.room, command{kind: in.Type, client: c, in: in}) {
+				c.closeBusy(conn)
+				return
+			}
 		}
 	}
+}
+
+func enqueueRoomCommand(r *Room, c command) bool {
+	select {
+	case <-r.done:
+		return false
+	default:
+	}
+	select {
+	case r.cmds <- c:
+		return true
+	case <-r.done:
+		return false
+	default:
+		if r.hub != nil {
+			r.hub.recordCommandQueueFull(r.id)
+		}
+		return false
+	}
+}
+
+func (c *Client) closeBusy(conn *websocket.Conn) {
+	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "room is busy"), time.Now().Add(writeWait))
 }
 
 type messageRateLimiter struct {
@@ -550,6 +916,9 @@ func validateRegister(reg crdt.Register, limits Limits) error {
 		return errProtocol("bad node")
 	}
 	if reg.Deleted {
+		if len(reg.Value) > 0 {
+			return errProtocol("tombstone must not carry a value")
+		}
 		return nil
 	}
 	if len(reg.Value) == 0 || len(reg.Value) > limits.MaxValueBytes || !json.Valid(reg.Value) {
@@ -567,6 +936,7 @@ func (e errProtocol) Error() string { return string(e) }
 func (c *Client) writePump(conn *websocket.Conn) {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
+		c.releaseConnection()
 		ticker.Stop()
 		conn.Close()
 	}()
@@ -578,7 +948,9 @@ func (c *Client) writePump(conn *websocket.Conn) {
 				_ = conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			err := conn.WriteMessage(websocket.TextMessage, msg)
+			c.queuedBytes.Add(-int64(len(msg)))
+			if err != nil {
 				return
 			}
 		case <-ticker.C:
@@ -588,4 +960,34 @@ func (c *Client) writePump(conn *websocket.Conn) {
 			}
 		}
 	}
+}
+
+func processFDStats() (int, int) {
+	if runtime.GOOS != "linux" {
+		return 0, 0
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return 0, 0
+	}
+	open := len(entries)
+	data, err := os.ReadFile("/proc/self/limits")
+	if err != nil {
+		return open, 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "Max open files") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[3] == "unlimited" {
+			return open, 0
+		}
+		limit, err := strconv.Atoi(fields[3])
+		if err != nil {
+			return open, 0
+		}
+		return open, limit
+	}
+	return open, 0
 }

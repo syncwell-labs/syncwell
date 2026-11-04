@@ -30,7 +30,7 @@ sw.presence({ cursor: { x: 12, y: 40 } }); // ephemeral, not persisted
 
 | method | description |
 | --- | --- |
-| `new Syncwell(url, room, opts?)` | `opts.clientId`, `opts.token`, `opts.persist`, `opts.storage`, `opts.storageKey`, `opts.WebSocket` (for Node), `opts.delta`, `opts.historyLimit` |
+| `new Syncwell(url, room, opts?)` | `opts.clientId`, `opts.token`, `opts.persist`, `opts.storage`, `opts.storageKey`, `opts.WebSocket` (for Node), `opts.delta`, `opts.followOwner`, `opts.historyLimit` |
 | `ready` | resolves after the initial persistence load |
 | `connect()` / `close()` | open / close the socket (auto-reconnect on drop) |
 | `set(key, value)` / `delete(key)` | optimistic local write, then sync |
@@ -39,6 +39,10 @@ sw.presence({ cursor: { x: 12, y: 40 } }); // ephemeral, not persisted
 | `undo()` / `redo()` / `canUndo()` / `canRedo()` | per-client history; remote winners are never clobbered |
 | `presence(data)` | ephemeral broadcast (cursors, who's-online) |
 | `on(event, cb)` / `off(event, cb?)` | `change`, `presence`, `leave`, `open`, `close`, `error`, `history` |
+
+For Redis ownership deployments, pass `followOwner: true` to resolve
+`GET /route?room=...` before every connection and reconnect. It is off by
+default; the route endpoint must be reachable from the client.
 
 ### Collaborative text
 

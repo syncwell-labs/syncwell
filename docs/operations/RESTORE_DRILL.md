@@ -20,21 +20,24 @@ The goal is to prove four things before relying on a backup strategy:
 2. Create a room, make a few edits, and confirm the state is visible in the
    browser demo. Stop the service.
 
-3. Take an offline backup. This flushes and fsyncs every room log, copies them,
-   and writes a `MANIFEST.json` with each file's size and SHA-256.
+3. Generate a dedicated age identity and take an offline encrypted backup. Keep
+   the identity private key offline and record the public recipient separately.
 
    ```bash
-   syncwell -data /var/lib/syncwell -backup /backup/2026-10-20
-   syncwell -verify-backup /backup/2026-10-20      # prints "backup ok: N files..."
+   age-keygen -o /secure/backup-identity.txt
+   # Copy the printed age1... key into the backup job's protected config.
+   syncwell -data /var/lib/syncwell -backup /backup/2026-10-20 -backup-recipient age1...
+   syncwell -verify-backup /backup/2026-10-20 -restore-identity /secure/backup-identity.txt
    ```
 
-4. (Recommended) Prove the backup is trustworthy: copy it, flip a byte in one
-   `.log`, and confirm `-verify-backup` fails. `-restore` refuses the same copy.
+4. Prove the backup is trustworthy: copy it, flip a byte in one `.age` file,
+   and confirm `-verify-backup` fails. `-restore` refuses the same copy.
 
 5. Restore into a fresh host or container, or over the emptied data directory.
 
    ```bash
-   syncwell -restore /backup/2026-10-20 -data /var/lib/syncwell
+   syncwell -restore /backup/2026-10-20 -data /var/lib/syncwell \
+     -restore-identity /secure/backup-identity.txt
    ```
 
 6. Start the same or newer Syncwell binary against the restored directory.
@@ -47,7 +50,7 @@ The goal is to prove four things before relying on a backup strategy:
 
 ## Automation
 
-`tests/e2e/restore_drill.mjs` runs the whole loop in CI:
+`tests/e2e/restore_drill.mjs` creates a test identity and runs the whole encrypted loop in CI:
 
 - boot the server, write a known room state, hard-kill it
 - back up with `-backup`, verify with `-verify-backup`

@@ -3,7 +3,7 @@
 // silently overwriting live data. Run: make restore-drill
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,7 @@ async function main() {
   const backupDir = path.join(root, "backup");
   const corruptDir = path.join(root, "corrupt");
   const scratchData = path.join(root, "scratch");
+  const identityFile = path.join(root, "backup-identity.txt");
   let srv = null;
   let failed = null;
 
@@ -53,28 +54,31 @@ async function main() {
     await stopServer(srv);
     srv = null;
 
-    // 2) Offline backup (flushes + fsyncs, writes a checksummed manifest).
-    const backup = await run(BIN, ["-data", dataDir, "-backup", backupDir]);
+    // 2) Generate a dedicated test identity and write an encrypted backup.
+    const keygen = await run("go", ["run", "./tests/helpers/agekeygen", "-o", identityFile]);
+    const publicKey = `${keygen.stdout}\n${keygen.stderr}`.match(/Public key: (age1\S+)/)?.[1];
+    assert.ok(publicKey, "age-keygen must print its public recipient");
+    const backup = await run(BIN, ["-data", dataDir, "-backup", backupDir, "-backup-recipient", publicKey]);
     assert.match(backup.stdout, /backed up \d+ files/, backup.stdout);
-    const verify = await run(BIN, ["-verify-backup", backupDir]);
+    const verify = await run(BIN, ["-verify-backup", backupDir, "-restore-identity", identityFile]);
     assert.match(verify.stdout, /backup ok/, verify.stdout);
 
     // 3) A tampered backup must fail verification and must not restore.
     await cp(backupDir, corruptDir, { recursive: true });
-    const manifest = JSON.parse(await readFile(path.join(corruptDir, "MANIFEST.json"), "utf8"));
-    const logPath = path.join(corruptDir, manifest.files[0].name);
+    const encryptedFiles = await readdir(corruptDir);
+    const logPath = path.join(corruptDir, encryptedFiles.find((name) => name.endsWith(".log.age")));
     const bytes = await readFile(logPath);
     bytes[bytes.length - 1] ^= 0xff;
     await writeFile(logPath, bytes);
-    await assert.rejects(run(BIN, ["-verify-backup", corruptDir]), /verify backup|checksum/i);
+    await assert.rejects(run(BIN, ["-verify-backup", corruptDir, "-restore-identity", identityFile]), /verify backup|checksum|decrypt/i);
     await assert.rejects(
-      run(BIN, ["-restore", corruptDir, "-data", scratchData]),
+      run(BIN, ["-restore", corruptDir, "-data", scratchData, "-restore-identity", identityFile]),
       /restore|checksum/i,
     );
 
     // 4) Lose the data directory entirely, then restore from the backup.
     await rm(dataDir, { recursive: true, force: true });
-    const restored = await run(BIN, ["-restore", backupDir, "-data", dataDir]);
+    const restored = await run(BIN, ["-restore", backupDir, "-data", dataDir, "-restore-identity", identityFile]);
     assert.match(restored.stdout, /restored \d+ files/, restored.stdout);
 
     // 5) A fresh server on the restored directory must serve the document.

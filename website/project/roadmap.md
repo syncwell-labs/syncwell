@@ -34,4 +34,4 @@ separately.
 - A hosted SaaS. Syncwell is self-hosted software.
 
 The canonical board, release gates, and owner-only items are in
-[`docs/product/MILESTONES.md`](https://github.com/Nil-Vaghani/syncwell/blob/main/docs/product/MILESTONES.md).
+[`docs/product/MILESTONES.md`](https://github.com/syncwell-labs/syncwell/blob/main/docs/product/MILESTONES.md).

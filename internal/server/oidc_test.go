@@ -371,3 +371,18 @@ func TestOIDCCapsClaimShapes(t *testing.T) {
 		t.Fatalf("missing caps = %v", got)
 	}
 }
+
+func TestOIDCRejectsPlaintextMetadataURLs(t *testing.T) {
+	if _, err := NewOIDCVerifier(context.Background(), OIDCConfig{
+		Issuer:  "http://idp.example",
+		JWKSURL: "https://idp.example/jwks",
+	}); err == nil {
+		t.Fatal("plaintext issuer accepted")
+	}
+	if _, err := NewOIDCVerifier(context.Background(), OIDCConfig{
+		Issuer:  "https://idp.example",
+		JWKSURL: "http://idp.example/jwks",
+	}); err == nil {
+		t.Fatal("plaintext JWKS URL accepted")
+	}
+}

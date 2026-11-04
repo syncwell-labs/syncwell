@@ -70,6 +70,9 @@ func NewOIDCVerifier(ctx context.Context, cfg OIDCConfig) (*OIDCVerifier, error)
 	if strings.TrimSpace(cfg.Issuer) == "" {
 		return nil, errors.New("oidc: issuer is required")
 	}
+	if err := requireSecureURL(cfg.Issuer); err != nil {
+		return nil, fmt.Errorf("oidc: issuer: %w", err)
+	}
 	if cfg.RoomClaim == "" {
 		cfg.RoomClaim = defaultOIDCRoomClaim
 	}
@@ -80,7 +83,20 @@ func NewOIDCVerifier(ctx context.Context, cfg OIDCConfig) (*OIDCVerifier, error)
 		cfg.Refresh = defaultOIDCRefresh
 	}
 	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: 5 * time.Second}
+		cfg.Client = &http.Client{Timeout: 5 * time.Second, Transport: newSafeTransport(true)}
+	} else {
+		clientCopy := *cfg.Client
+		cfg.Client = &clientCopy
+	}
+	origRedirect := cfg.Client.CheckRedirect
+	cfg.Client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := validateRedirect(true)(req, via); err != nil {
+			return err
+		}
+		if origRedirect != nil {
+			return origRedirect(req, via)
+		}
+		return nil
 	}
 	v := &OIDCVerifier{
 		issuer:    cfg.Issuer,
@@ -97,10 +113,24 @@ func NewOIDCVerifier(ctx context.Context, cfg OIDCConfig) (*OIDCVerifier, error)
 			return v, err
 		}
 	}
+	if err := requireSecureURL(v.jwksURL); err != nil {
+		return v, fmt.Errorf("oidc: jwks: %w", err)
+	}
 	if err := v.refreshKeys(ctx); err != nil {
 		return v, err
 	}
 	return v, nil
+}
+
+// requireSecureURL rejects plaintext OIDC metadata URLs except for loopback
+// development servers (including httptest). It also rejects credentials,
+// fragments, and unsupported schemes so a discovered jwks_uri cannot smuggle a
+// non-HTTP URL into the fetcher.
+func requireSecureURL(raw string) error {
+	if err := validateEgressURL(raw, true); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (v *OIDCVerifier) discover(ctx context.Context) error {

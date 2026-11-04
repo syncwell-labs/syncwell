@@ -13,12 +13,21 @@ services:
     plan: free
     region: singapore
     image:
+      # Kept on the last published digest until the syncwell-labs v0.5.0 image
+      # exists and pulls anonymously (see docs/operations/RELEASE_CHECKLIST.md).
+      # Do not switch the owner before the replacement digest is published:
+      # Render would fail to pull the image.
       url: ghcr.io/nil-vaghani/syncwell@sha256:f37fc729237873b75c94824ba5503908800a98990fa35f30fcbf7314f5dbc1d2
     healthCheckPath: /healthz
     envVars:
       # Throwaway public demo: no room tokens, in-memory rooms only. Keep the
       # admin token set so /stats and /metrics stay protected.
       - key: SYNCWELL_INSECURE
+        value: "1"
+      # The demo is a browser app embedded in the Render URL and is deliberately
+      # open. This marks cross-origin access as an explicit choice; production
+      # deployments must set SYNCWELL_ORIGINS and leave this unset.
+      - key: SYNCWELL_ALLOW_ANY_ORIGIN
         value: "1"
       - key: SYNCWELL_ADMIN_TOKEN
         generateValue: true

@@ -64,5 +64,5 @@ release:
   draft: false
   prerelease: auto
   footer: |
-    **Container:** `ghcr.io/nil-vaghani/syncwell:{{ .Version }}` (multi-arch, signed)
+    **Container:** `ghcr.io/syncwell-labs/syncwell:{{ .Version }}` (multi-arch, signed)
     **SDK:** `npm install syncwell-client@{{ .Version }}` (published separately on `sdk-v*` tags)
