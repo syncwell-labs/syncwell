@@ -74,6 +74,10 @@ func (n noDirListFS) Open(name string) (http.File, error) {
 		return nil, os.ErrNotExist
 	}
 	full := n.root
+	rootInfo, err := os.Lstat(full)
+	if err != nil || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, os.ErrNotExist
+	}
 	if rel != "." {
 		for _, component := range strings.Split(rel, "/") {
 			full = filepath.Join(full, filepath.FromSlash(component))

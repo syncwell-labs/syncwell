@@ -113,4 +113,15 @@ func TestNoDirListFSBlocksListingsDotfilesAndSymlinks(t *testing.T) {
 	if _, err := NoDirListFS(root).Open("empty"); err == nil {
 		t.Fatal("static filesystem opened a directory without index.html")
 	}
+
+	link := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(root, link); err != nil {
+		if os.IsPermission(err) {
+			t.Skip("symlinks are not permitted on this platform")
+		}
+		t.Fatal(err)
+	}
+	if _, err := NoDirListFS(link).Open("plain.txt"); err == nil {
+		t.Fatal("static filesystem followed a symlinked root")
+	}
 }

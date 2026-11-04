@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,5 +58,44 @@ func TestHubShutdownCompactsAndClosesRoomStore(t *testing.T) {
 	loaded, err := st.Load("room")
 	if err != nil || len(loaded) != 1 {
 		t.Fatalf("shutdown persisted state=%v err=%v", loaded, err)
+	}
+}
+
+func TestHubShutdownLogsIncompleteRoomCountsForEveryDrainWait(t *testing.T) {
+	for _, mode := range []string{"anti-entropy", "queue-admission", "room-completion"} {
+		t.Run(mode, func(t *testing.T) {
+			h := NewHub(Config{IdleRoomTTL: -1})
+			r := &Room{cmds: make(chan command, 1), done: make(chan struct{})}
+			h.rooms["stalled"] = r
+			switch mode {
+			case "anti-entropy":
+				h.aeStop = make(chan struct{})
+				h.aeDone = make(chan struct{})
+			case "queue-admission":
+				r.cmds <- command{kind: "occupy-queue"}
+			}
+
+			var output bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&output)
+			defer log.SetOutput(previous)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			if err := h.Shutdown(ctx); err != context.DeadlineExceeded {
+				t.Fatalf("shutdown error = %v, want deadline exceeded", err)
+			}
+			line := output.String()
+			for _, field := range []string{
+				`"event":"shutdown_incomplete"`,
+				`"rooms_total":1`,
+				`"rooms_completed":0`,
+				`"rooms_remaining":1`,
+			} {
+				if !strings.Contains(line, field) {
+					t.Errorf("shutdown log missing %s: %s", field, line)
+				}
+			}
+		})
 	}
 }

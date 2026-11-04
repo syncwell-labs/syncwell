@@ -711,6 +711,25 @@ func writeLog(path string, state map[string]crdt.Register) error {
 // flushes and fsyncs open files before copying, but it does not freeze the
 // process.
 func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
+	if dst == "" {
+		return nil, errors.New("backup destination is required")
+	}
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, err
+	}
+	resolvedStore, err := filepath.EvalSymlinks(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return nil, err
+	}
+	resolvedDst := filepath.Join(resolvedParent, filepath.Base(filepath.Clean(dst)))
+	if directoriesOverlap(resolvedStore, resolvedDst) {
+		return nil, errors.New("backup destination and store directory must not overlap")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -728,6 +747,20 @@ func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
 
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return nil, err
+	}
+	dstInfo, err := os.Lstat(dst)
+	if err != nil {
+		return nil, err
+	}
+	if !dstInfo.IsDir() {
+		return nil, fmt.Errorf("backup destination is not a real directory: %s", dst)
+	}
+	resolvedDst, err = filepath.EvalSymlinks(dst)
+	if err != nil {
+		return nil, err
+	}
+	if directoriesOverlap(resolvedStore, resolvedDst) {
+		return nil, errors.New("backup destination and store directory must not overlap")
 	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -750,12 +783,24 @@ func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmp := filepath.Join(dst, ManifestFile+".tmp")
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	tmp, err := os.CreateTemp(dst, ".syncwell-manifest-*")
+	if err != nil {
 		return nil, err
 	}
-	if err := os.Rename(tmp, filepath.Join(dst, ManifestFile)); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmpPath, filepath.Join(dst, ManifestFile)); err != nil {
 		return nil, err
 	}
 	if err := syncDir(dst); err != nil {
@@ -767,9 +812,20 @@ func (s *FileStore) Backup(dst string) (*BackupManifest, error) {
 // VerifyBackup checks a backup directory against its manifest and returns the
 // manifest. Any missing file, size mismatch, or checksum mismatch is an error.
 func VerifyBackup(dir string) (*BackupManifest, error) {
-	data, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	f, err := openRegular(filepath.Join(dir, ManifestFile))
 	if err != nil {
 		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, (16<<20)+1))
+	closeErr := f.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if len(data) > 16<<20 {
+		return nil, errors.New("backup manifest exceeds 16 MiB")
 	}
 	var m BackupManifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -778,23 +834,33 @@ func VerifyBackup(dir string) (*BackupManifest, error) {
 	if m.Format != 1 {
 		return nil, fmt.Errorf("unsupported backup format %d", m.Format)
 	}
+	seen := make(map[string]struct{}, len(m.Files))
 	for _, bf := range m.Files {
 		if bf.Name == "" || filepath.Base(bf.Name) != bf.Name || (!strings.HasSuffix(bf.Name, ".log") && !strings.HasSuffix(bf.Name, ".meta")) {
 			return nil, fmt.Errorf("unsafe backup entry %q", bf.Name)
 		}
+		if _, ok := seen[bf.Name]; ok {
+			return nil, fmt.Errorf("duplicate backup entry %q", bf.Name)
+		}
+		seen[bf.Name] = struct{}{}
 		path := filepath.Join(dir, bf.Name)
-		fi, err := os.Stat(path)
+		file, err := openRegular(path)
 		if err != nil {
 			return nil, err
 		}
-		if fi.Size() != bf.Size {
-			return nil, fmt.Errorf("backup file %s: size %d, manifest says %d", bf.Name, fi.Size(), bf.Size)
-		}
-		sum, err := fileSHA256(path)
+		h := sha256.New()
+		size, err := io.Copy(h, file)
+		closeErr := file.Close()
 		if err != nil {
 			return nil, err
 		}
-		if sum != bf.SHA256 {
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if size != bf.Size {
+			return nil, fmt.Errorf("backup file %s: size %d, manifest says %d", bf.Name, size, bf.Size)
+		}
+		if hex.EncodeToString(h.Sum(nil)) != bf.SHA256 {
 			return nil, fmt.Errorf("backup file %s: checksum mismatch", bf.Name)
 		}
 	}
@@ -805,6 +871,9 @@ func VerifyBackup(dir string) (*BackupManifest, error) {
 // Stale logs in dst are removed so a restore cannot mix old and backed-up
 // state. The server must be stopped while restoring.
 func Restore(src, dst string) (*BackupManifest, error) {
+	if src == "" || dst == "" {
+		return nil, errors.New("backup source and restore destination are required")
+	}
 	m, err := VerifyBackup(src)
 	if err != nil {
 		return nil, err
@@ -812,63 +881,183 @@ func Restore(src, dst string) (*BackupManifest, error) {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return nil, err
 	}
+	resolvedSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return nil, err
+	}
+	resolvedDst, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return nil, err
+	}
+	if directoriesOverlap(resolvedSrc, resolvedDst) {
+		return nil, errors.New("backup source and restore destination must not overlap")
+	}
+	stage, err := os.MkdirTemp(dst, ".syncwell-restore-*")
+	if err != nil {
+		return nil, err
+	}
+	keepStage := false
+	defer func() {
+		if !keepStage {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	newDir := filepath.Join(stage, "new")
+	oldDir := filepath.Join(stage, "old")
+	if err := os.Mkdir(newDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(oldDir, 0o700); err != nil {
+		return nil, err
+	}
+	for _, bf := range m.Files {
+		if err := copyVerified(filepath.Join(newDir, bf.Name), filepath.Join(src, bf.Name), bf); err != nil {
+			return nil, err
+		}
+	}
+	if err := syncDir(newDir); err != nil {
+		return nil, err
+	}
+
 	entries, err := os.ReadDir(dst)
 	if err != nil {
 		return nil, err
 	}
+	var saved []string
 	for _, entry := range entries {
 		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".log") && !strings.HasSuffix(entry.Name(), ".meta")) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dst, entry.Name())); err != nil {
-			return nil, err
+		if err := os.Rename(filepath.Join(dst, entry.Name()), filepath.Join(oldDir, entry.Name())); err != nil {
+			return nil, rollbackPlainRestore(dst, oldDir, nil, saved, stage, &keepStage, err)
 		}
+		saved = append(saved, entry.Name())
 	}
+	if err := errors.Join(syncDir(oldDir), syncDir(dst)); err != nil {
+		return nil, rollbackPlainRestore(dst, oldDir, nil, saved, stage, &keepStage, err)
+	}
+	var installed []string
 	for _, bf := range m.Files {
-		if err := copyAtomic(filepath.Join(dst, bf.Name), filepath.Join(src, bf.Name)); err != nil {
-			return nil, err
+		if err := os.Rename(filepath.Join(newDir, bf.Name), filepath.Join(dst, bf.Name)); err != nil {
+			return nil, rollbackPlainRestore(dst, oldDir, installed, saved, stage, &keepStage, err)
 		}
+		installed = append(installed, bf.Name)
+	}
+	if err := syncDir(dst); err != nil {
+		return nil, rollbackPlainRestore(dst, oldDir, installed, saved, stage, &keepStage, err)
+	}
+	if err := os.RemoveAll(stage); err != nil {
+		return nil, fmt.Errorf("restore committed but could not remove staging directory %s: %w", stage, err)
+	}
+	if err := syncDir(dst); err != nil {
+		return nil, err
 	}
 	return m, nil
 }
 
+func rollbackPlainRestore(dst, oldDir string, installed, saved []string, stage string, keepStage *bool, cause error) error {
+	var rollbackErr error
+	for _, name := range installed {
+		if err := os.Remove(filepath.Join(dst, name)); err != nil && !os.IsNotExist(err) {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+	}
+	for _, name := range saved {
+		if err := os.Rename(filepath.Join(oldDir, name), filepath.Join(dst, name)); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+	}
+	rollbackErr = errors.Join(rollbackErr, syncDir(dst))
+	if rollbackErr != nil {
+		*keepStage = true
+		return fmt.Errorf("restore failed: %w; rollback failed: %v; recovery files kept in %s", cause, rollbackErr, stage)
+	}
+	return cause
+}
+
 func copyHashed(dst, src string) (BackupFile, error) {
-	in, err := os.Open(src)
+	in, err := openRegular(src)
 	if err != nil {
 		return BackupFile{}, err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".syncwell-backup-file-*")
 	if err != nil {
 		return BackupFile{}, err
 	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(out, h), in)
+	n, err := io.Copy(io.MultiWriter(tmp, h), in)
 	if err != nil {
-		_ = out.Close()
+		_ = tmp.Close()
 		return BackupFile{}, err
 	}
-	if err := out.Sync(); err != nil {
-		_ = out.Close()
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return BackupFile{}, err
 	}
-	if err := out.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
+		return BackupFile{}, err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return BackupFile{}, err
+	}
+	if err := syncDir(filepath.Dir(dst)); err != nil {
 		return BackupFile{}, err
 	}
 	return BackupFile{Name: filepath.Base(dst), Size: n, SHA256: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
-func copyAtomic(dst, src string) error {
-	tmp := dst + ".restore.tmp"
-	if _, err := copyHashed(tmp, src); err != nil {
-		_ = os.Remove(tmp)
+func copyVerified(dst, src string, expected BackupFile) error {
+	in, err := openRegular(src)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
 		return err
 	}
-	return syncDir(filepath.Dir(dst))
+	h := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(out, h), in)
+	if copyErr == nil && (n != expected.Size || hex.EncodeToString(h.Sum(nil)) != expected.SHA256) {
+		copyErr = fmt.Errorf("backup file %s changed during restore", expected.Name)
+	}
+	var syncErr error
+	if copyErr == nil {
+		syncErr = out.Sync()
+	}
+	closeErr := out.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		_ = os.Remove(dst)
+		return errors.Join(copyErr, syncErr, closeErr)
+	}
+	return nil
+}
+
+func openRegular(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("refusing non-regular file: %s", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	actual, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !actual.Mode().IsRegular() || !os.SameFile(info, actual) {
+		f.Close()
+		return nil, fmt.Errorf("file changed while opening: %s", path)
+	}
+	return f, nil
 }
 
 // syncDir makes a rename durable across power loss.
@@ -879,19 +1068,6 @@ func syncDir(dir string) error {
 	}
 	defer d.Close()
 	return d.Sync()
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Close flushes, fsyncs, and closes every open room file.

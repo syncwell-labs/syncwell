@@ -32,7 +32,7 @@ function randomId() {
   }
 }
 
-function buildURL(baseURL, room, token, delta, tokenInQuery = true) {
+function buildURL(baseURL, room, token, delta, tokenInQuery = false) {
   const url = new URL(baseURL, "http://syncwell.local");
   url.searchParams.set("room", room);
   if (token && tokenInQuery) url.searchParams.set("token", token);
@@ -78,7 +78,13 @@ export class Syncwell {
     this.baseURL = baseURL;
     this.room = room;
     this.token = opts.token;
-    this.tokenTransport = opts.tokenTransport !== "query" ? "subprotocol" : "query";
+    if (this.token != null && typeof this.token !== "string") {
+      throw new TypeError("token must be a string");
+    }
+    this.tokenTransport = opts.tokenTransport ?? "subprotocol";
+    if (this.tokenTransport !== "subprotocol" && this.tokenTransport !== "query") {
+      throw new TypeError('tokenTransport must be "subprotocol" or "query"');
+    }
     this.followOwner = opts.followOwner === true;
     this.fetch = opts.fetch || (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : null);
     this._routePromise = null;

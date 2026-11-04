@@ -30,7 +30,7 @@ export interface WebSocketConstructor {
 export interface SyncwellOptions {
   /** Room token when the server runs with `-secret`. */
   token?: string;
-  /** Token carrier (default: `subprotocol`; use `query` only for legacy servers). */
+  /** Token carrier (default: `subprotocol`; use `query` only for legacy servers; other values throw). */
   tokenTransport?: "query" | "subprotocol";
   /** Resolve `/route?room=` before each connection/reconnect (default false). */
   followOwner?: boolean;

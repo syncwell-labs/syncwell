@@ -1949,6 +1949,10 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 		select {
 		case <-h.aeDone:
 		case <-ctx.Done():
+			h.mu.Lock()
+			total := len(h.rooms)
+			h.mu.Unlock()
+			h.logShutdownIncomplete(0, total)
 			return ctx.Err()
 		}
 	}
@@ -1970,13 +1974,14 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 			completed++
 			continue
 		case <-ctx.Done():
-			LogEvent("shutdown_incomplete", map[string]any{"rooms_total": len(rooms), "rooms_completed": completed, "rooms_remaining": len(rooms) - completed})
+			h.logShutdownIncomplete(completed, len(rooms))
 			return ctx.Err()
 		}
 		select {
 		case <-done:
 		case <-r.done:
 		case <-ctx.Done():
+			h.logShutdownIncomplete(completed, len(rooms))
 			return ctx.Err()
 		}
 		completed++
@@ -1985,6 +1990,18 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 		h.webhooks.Close(ctx)
 	}
 	return nil
+}
+
+func (h *Hub) logShutdownIncomplete(completed, total int) {
+	if completed < 0 {
+		completed = 0
+	}
+	if total < completed {
+		total = completed
+	}
+	LogEvent("shutdown_incomplete", map[string]any{
+		"rooms_total": total, "rooms_completed": completed, "rooms_remaining": total - completed,
+	})
 }
 
 // normalizeOrigin accepts only a bare HTTP(S) origin and returns a canonical

@@ -33,8 +33,27 @@ type encryptedBackupManifest struct {
 
 // BackupEncrypted writes age-encrypted room logs, metadata and manifest.
 func (s *FileStore) BackupEncrypted(dst string, recipients []age.Recipient) (*BackupManifest, error) {
+	if dst == "" {
+		return nil, errors.New("encrypted backup destination is required")
+	}
 	if len(recipients) == 0 {
 		return nil, errors.New("encrypted backup requires at least one age recipient")
+	}
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, err
+	}
+	resolvedStore, err := filepath.EvalSymlinks(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return nil, err
+	}
+	resolvedDst := filepath.Join(resolvedParent, filepath.Base(filepath.Clean(dst)))
+	if directoriesOverlap(resolvedStore, resolvedDst) {
+		return nil, errors.New("encrypted backup destination and store directory must not overlap")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,10 +67,6 @@ func (s *FileStore) BackupEncrypted(dst string, recipients []age.Recipient) (*Ba
 			}
 		}
 		delete(s.dirty, room)
-	}
-	parent := filepath.Dir(dst)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return nil, err
 	}
 	stage, err := os.MkdirTemp(parent, ".syncwell-backup-*")
 	if err != nil {
@@ -71,7 +86,17 @@ func (s *FileStore) BackupEncrypted(dst string, recipients []age.Recipient) (*Ba
 		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".log") && !strings.HasSuffix(entry.Name(), ".meta")) {
 			continue
 		}
-		item, err := encryptBackupFile(stage, filepath.Join(s.dir, entry.Name()), entry.Name(), recipients)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("refusing symlink in backup source: %s", entry.Name())
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("refusing non-regular file in backup source: %s", entry.Name())
+		}
+		item, err := encryptBackupFile(stage, filepath.Join(s.dir, entry.Name()), entry.Name(), info, recipients)
 		if err != nil {
 			return nil, err
 		}
@@ -112,43 +137,25 @@ func (s *FileStore) BackupEncrypted(dst string, recipients []age.Recipient) (*Ba
 	if err := syncDir(stage); err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(dst); err == nil {
-		old, err := os.MkdirTemp(parent, ".syncwell-backup-old-*")
-		if err != nil {
-			return nil, err
-		}
-		if err := os.Remove(old); err != nil {
-			return nil, err
-		}
-		if err := os.Rename(dst, old); err != nil {
-			return nil, err
-		}
-		if err := os.Rename(stage, dst); err != nil {
-			_ = os.Rename(old, dst)
-			return nil, err
-		}
-		if err := os.RemoveAll(old); err != nil {
-			return nil, err
-		}
-	} else if os.IsNotExist(err) {
-		if err := os.Rename(stage, dst); err != nil {
-			return nil, err
-		}
-	} else {
-		return nil, err
-	}
-	if err := syncDir(parent); err != nil {
+	if err := replaceStagedDir(stage, dst, parent, ".syncwell-backup-old-*"); err != nil {
 		return nil, err
 	}
 	return plainManifest, nil
 }
 
-func encryptBackupFile(dst, src, name string, recipients []age.Recipient) (encryptedBackupFile, error) {
+func encryptBackupFile(dst, src, name string, expected os.FileInfo, recipients []age.Recipient) (encryptedBackupFile, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return encryptedBackupFile{}, err
 	}
 	defer in.Close()
+	actual, err := in.Stat()
+	if err != nil {
+		return encryptedBackupFile{}, err
+	}
+	if !actual.Mode().IsRegular() || !os.SameFile(expected, actual) {
+		return encryptedBackupFile{}, fmt.Errorf("backup source changed while opening: %s", name)
+	}
 	target := name + ".age"
 	tmp := filepath.Join(dst, target+".tmp")
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
@@ -158,8 +165,11 @@ func encryptBackupFile(dst, src, name string, recipients []age.Recipient) (encry
 	h := sha256.New()
 	cw := &countHashWriter{w: io.MultiWriter(f, h)}
 	enc, err := age.Encrypt(cw, recipients...)
+	plainHash := sha256.New()
+	var plainCounter *countHashWriter
 	if err == nil {
-		_, err = io.Copy(enc, in)
+		plainCounter = &countHashWriter{w: io.MultiWriter(enc, plainHash)}
+		_, err = io.Copy(plainCounter, in)
 		if closeErr := enc.Close(); err == nil {
 			err = closeErr
 		}
@@ -179,11 +189,7 @@ func encryptBackupFile(dst, src, name string, recipients []age.Recipient) (encry
 		_ = os.Remove(tmp)
 		return encryptedBackupFile{}, err
 	}
-	plainHash, plainSize, err := hashFile(src)
-	if err != nil {
-		return encryptedBackupFile{}, err
-	}
-	return encryptedBackupFile{Name: target, PlainSize: plainSize, PlainSHA256: plainHash, CipherSize: cw.n, CipherSHA256: hex.EncodeToString(h.Sum(nil))}, nil
+	return encryptedBackupFile{Name: target, PlainSize: plainCounter.n, PlainSHA256: hex.EncodeToString(plainHash.Sum(nil)), CipherSize: cw.n, CipherSHA256: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
 type countHashWriter struct {
@@ -197,24 +203,13 @@ func (w *countHashWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func hashFile(path string) (string, int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-	h := sha256.New()
-	n, err := io.Copy(h, f)
-	return hex.EncodeToString(h.Sum(nil)), n, err
-}
-
 // VerifyEncryptedBackup authenticates the manifest and each payload without
 // writing any plaintext to disk.
 func VerifyEncryptedBackup(dir string, identities []age.Identity) (*BackupManifest, error) {
 	if len(identities) == 0 {
 		return nil, errors.New("encrypted backup verification requires -restore-identity")
 	}
-	f, err := os.Open(filepath.Join(dir, encryptedManifestFile))
+	f, err := openRegular(filepath.Join(dir, encryptedManifestFile))
 	if err != nil {
 		return nil, err
 	}
@@ -238,20 +233,34 @@ func VerifyEncryptedBackup(dir string, identities []age.Identity) (*BackupManife
 		return nil, fmt.Errorf("unsupported encrypted backup format %d", m.Format)
 	}
 	plain := &BackupManifest{Format: 2, Created: m.Created}
+	seen := make(map[string]struct{}, len(m.Files))
 	for _, item := range m.Files {
-		if item.Name == "" || filepath.Base(item.Name) != item.Name || !strings.HasSuffix(item.Name, ".age") {
+		if item.Name == "" || filepath.Base(item.Name) != item.Name ||
+			(!strings.HasSuffix(item.Name, ".log.age") && !strings.HasSuffix(item.Name, ".meta.age")) {
 			return nil, fmt.Errorf("unsafe encrypted backup entry %q", item.Name)
 		}
+		if _, ok := seen[item.Name]; ok {
+			return nil, fmt.Errorf("duplicate encrypted backup entry %q", item.Name)
+		}
+		seen[item.Name] = struct{}{}
 		path := filepath.Join(dir, item.Name)
-		ch, cn, err := hashFile(path)
+		in, err := openRegular(path)
 		if err != nil {
 			return nil, err
 		}
+		cipherHash := sha256.New()
+		cn, err := io.Copy(cipherHash, in)
+		if err != nil {
+			in.Close()
+			return nil, err
+		}
+		ch := hex.EncodeToString(cipherHash.Sum(nil))
 		if cn != item.CipherSize || ch != item.CipherSHA256 {
+			in.Close()
 			return nil, fmt.Errorf("backup file %s: ciphertext checksum mismatch", item.Name)
 		}
-		in, err := os.Open(path)
-		if err != nil {
+		if _, err := in.Seek(0, io.SeekStart); err != nil {
+			in.Close()
 			return nil, err
 		}
 		dec, err := age.Decrypt(in, identities...)
@@ -276,11 +285,30 @@ func VerifyEncryptedBackup(dir string, identities []age.Identity) (*BackupManife
 
 // RestoreEncrypted verifies the complete backup before replacing destination logs.
 func RestoreEncrypted(src, dst string, identities []age.Identity) (*BackupManifest, error) {
+	if src == "" || dst == "" {
+		return nil, errors.New("encrypted backup source and restore destination are required")
+	}
 	m, err := VerifyEncryptedBackup(src, identities)
 	if err != nil {
 		return nil, err
 	}
-	stage, err := os.MkdirTemp(filepath.Dir(dst), "syncwell-restore-*")
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, err
+	}
+	resolvedSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return nil, err
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return nil, err
+	}
+	resolvedDst := filepath.Join(resolvedParent, filepath.Base(filepath.Clean(dst)))
+	if directoriesOverlap(resolvedSrc, resolvedDst) {
+		return nil, errors.New("encrypted backup source and restore destination must not overlap")
+	}
+	stage, err := os.MkdirTemp(parent, "syncwell-restore-*")
 	if err != nil {
 		return nil, err
 	}
@@ -301,8 +329,15 @@ func RestoreEncrypted(src, dst string, identities []age.Identity) (*BackupManife
 			in.Close()
 			return nil, err
 		}
-		_, copyErr := io.Copy(out, dec)
-		syncErr := out.Sync()
+		h := sha256.New()
+		n, copyErr := io.Copy(io.MultiWriter(out, h), dec)
+		if copyErr == nil && (n != bf.Size || hex.EncodeToString(h.Sum(nil)) != bf.SHA256) {
+			copyErr = fmt.Errorf("backup file %s changed during restore", bf.Name)
+		}
+		var syncErr error
+		if copyErr == nil {
+			syncErr = out.Sync()
+		}
 		closeErr := out.Close()
 		in.Close()
 		if copyErr != nil {
@@ -315,37 +350,101 @@ func RestoreEncrypted(src, dst string, identities []age.Identity) (*BackupManife
 			return nil, closeErr
 		}
 	}
-	parent := filepath.Dir(dst)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
+	if err := syncDir(stage); err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(dst); err == nil {
-		rollback, err := os.MkdirTemp(parent, "syncwell-restore-old-*")
-		if err != nil {
-			return nil, err
-		}
-		if err := os.Remove(rollback); err != nil {
-			return nil, err
-		}
-		if err := os.Rename(dst, rollback); err != nil {
-			return nil, err
-		}
-		if err := os.Rename(stage, dst); err != nil {
-			_ = os.Rename(rollback, dst)
-			return nil, err
-		}
-		if err := os.RemoveAll(rollback); err != nil {
-			return nil, err
-		}
-	} else if os.IsNotExist(err) {
-		if err := os.Rename(stage, dst); err != nil {
-			return nil, err
-		}
-	} else {
-		return nil, err
-	}
-	if err := syncDir(parent); err != nil {
+	if err := replaceStagedDir(stage, dst, parent, "syncwell-restore-old-*"); err != nil {
 		return nil, err
 	}
 	return m, nil
+}
+
+// replaceStagedDir installs a fully written directory and retains the previous
+// destination until the rename is durable in the parent directory.
+func replaceStagedDir(stage, dst, parent, oldPattern string) error {
+	info, err := os.Lstat(dst)
+	if os.IsNotExist(err) {
+		if err := os.Rename(stage, dst); err != nil {
+			return err
+		}
+		if err := syncDir(parent); err != nil {
+			rollbackErr := os.Rename(dst, stage)
+			if rollbackErr == nil {
+				rollbackErr = syncDir(parent)
+			}
+			return errors.Join(err, rollbackErr)
+		}
+		return nil
+	} else if err != nil {
+		return err
+	} else if !info.IsDir() {
+		return fmt.Errorf("backup/restore destination is not a directory: %s", dst)
+	}
+
+	old, err := os.MkdirTemp(parent, oldPattern)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(old); err != nil {
+		return err
+	}
+	if err := os.Rename(dst, old); err != nil {
+		return err
+	}
+	if err := os.Rename(stage, dst); err != nil {
+		rollbackErr := os.Rename(old, dst)
+		if rollbackErr == nil {
+			rollbackErr = syncDir(parent)
+		}
+		return errors.Join(err, rollbackErr)
+	}
+	if err := syncDir(parent); err != nil {
+		rollbackErr := rollbackDirReplacement(dst, old, parent)
+		return errors.Join(err, rollbackErr)
+	}
+	if err := os.RemoveAll(old); err != nil {
+		return err
+	}
+	return syncDir(parent)
+}
+
+func rollbackDirReplacement(dst, old, parent string) error {
+	failed, err := os.MkdirTemp(parent, ".syncwell-replacement-failed-*")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(failed); err != nil {
+		return err
+	}
+	if err := os.Rename(dst, failed); err != nil {
+		return err
+	}
+	if err := os.Rename(old, dst); err != nil {
+		restoreNewErr := os.Rename(failed, dst)
+		if restoreNewErr == nil {
+			restoreNewErr = syncDir(parent)
+		}
+		return errors.Join(err, restoreNewErr)
+	}
+	syncErr := syncDir(parent)
+	removeErr := os.RemoveAll(failed)
+	cleanupSyncErr := syncDir(parent)
+	return errors.Join(syncErr, removeErr, cleanupSyncErr)
+}
+
+func directoriesOverlap(a, b string) bool {
+	a, errA := filepath.Abs(filepath.Clean(a))
+	b, errB := filepath.Abs(filepath.Clean(b))
+	if errA != nil || errB != nil {
+		return true
+	}
+	return pathContains(a, b) || pathContains(b, a)
+}
+
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
