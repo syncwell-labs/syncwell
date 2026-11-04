@@ -231,8 +231,7 @@ export class Syncwell {
         }
       }
     };
-    this.ws.onclose = () => {
-      if (this.ws !== ws) return;
+    const afterDisconnect = () => {
       clearInterval(this._ackTimer);
       clearTimeout(this._helloTimer);
       this._ackTimer = null;
@@ -242,6 +241,12 @@ export class Syncwell {
       if (this._closed) return;
       this._scheduleReconnect();
     };
+    const disconnected = () => {
+      if (this.ws !== ws) return;
+      this.ws = null;
+      afterDisconnect();
+    };
+    this.ws.onclose = disconnected;
     this.ws.onmessage = (e) => {
       if (this.ws !== ws) return;
       try {
@@ -250,7 +255,17 @@ export class Syncwell {
         this._emitError("BAD_FRAME", "could not parse server frame", err);
       }
     };
-    this.ws.onerror = () => {}; // close handler drives reconnect
+    this.ws.onerror = () => {
+      if (this.ws !== ws) return;
+      // Some WebSocket implementations emit error without a close frame on
+      // connection failure. Detach first so close() cannot re-enter this
+      // handler, then close explicitly and run the reconnect path.
+      this.ws = null;
+      try {
+        ws.close();
+      } catch {}
+      afterDisconnect();
+    };
     return this;
   }
 

@@ -26,6 +26,10 @@ class FakeWebSocket {
     this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.();
   }
+
+  fail() {
+    this.onerror?.();
+  }
 }
 
 class MemoryStorage {
@@ -89,6 +93,19 @@ test("followOwner resolves the room route before opening the WebSocket", async (
   assert.equal(wsURL.host, "owner.example");
   assert.equal(wsURL.searchParams.get("room"), "room/one");
   assert.equal(wsURL.searchParams.has("token"), false);
+  sw.close();
+});
+
+test("reconnects when a WebSocket errors without emitting close", async () => {
+  FakeWebSocket.instances = [];
+  const sw = new Syncwell("ws://localhost:8080/ws", "room", { WebSocket: FakeWebSocket });
+  sw.connect();
+  const first = FakeWebSocket.last;
+  first.fail();
+  assert.equal(sw.ws, null);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.notEqual(FakeWebSocket.last, first);
+  assert.equal(FakeWebSocket.instances.length, 2);
   sw.close();
 });
 
