@@ -13,6 +13,10 @@ services:
     plan: free
     region: singapore
     image:
+      # Kept on the last published digest until the syncwell-labs v0.5.0 image
+      # exists and pulls anonymously (see docs/operations/RELEASE_CHECKLIST.md).
+      # Do not switch the owner before the replacement digest is published:
+      # Render would fail to pull the image.
       url: ghcr.io/nil-vaghani/syncwell@sha256:f37fc729237873b75c94824ba5503908800a98990fa35f30fcbf7314f5dbc1d2
     healthCheckPath: /healthz
     envVars:
