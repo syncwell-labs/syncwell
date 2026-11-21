@@ -46,6 +46,7 @@ checksum:
 
 sboms:
   - artifacts: archive
+    args: ["$artifact", "--output", "spdx-json=$document"]
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
