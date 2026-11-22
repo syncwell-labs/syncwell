@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "syncwell.fullname" . }}-config
+  labels:
+    {{- include "syncwell.labels" . | nindent 4 }}
+data:
+  maxRooms: {{ .Values.config.maxRooms | quote }}
+  idleRoomTTL: {{ .Values.config.idleRoomTTL | quote }}
+  maxMessageBytes: {{ .Values.config.limits.maxMessageBytes | quote }}
+  maxMessagesPerSecond: {{ .Values.config.limits.maxMessagesPerSecond | quote }}
+  maxDocBytes: {{ .Values.config.limits.maxDocBytes | quote }}

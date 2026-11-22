@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestTokenRoundTrip(t *testing.T) {
 	const secret = "s3cret"
@@ -151,5 +154,75 @@ func TestParseCapsFailsClosedForUnknownNonEmptyList(t *testing.T) {
 	}
 	if caps := parseCapsCSV(""); !caps[CapRead] || !caps[CapWrite] || !caps[CapPresence] {
 		t.Fatalf("empty caps lost legacy default: %v", caps)
+	}
+}
+
+func TestTokenClaims_KeyLevelRBAC(t *testing.T) {
+	const secret = "s3cret"
+	const room = "rbac-room"
+	now := time.Now().Unix()
+	exp := now + 3600
+
+	// 1. Token without write capability rejects all keys
+	readOnlyTok := SignAccessTokenWithKeys(secret, room, "user-ro", exp, []string{CapRead}, []string{"chat:*"}, "jti-ro")
+	claimsRO, ok := VerifyAccessToken(secret, room, readOnlyTok, now)
+	if !ok {
+		t.Fatal("failed to verify read-only token")
+	}
+	if claimsRO.CanWriteKey("chat:msg1") {
+		t.Fatal("read-only token should not be allowed to write any key")
+	}
+
+	// 2. Token with unrestricted write (empty AllowedKeys) allows any key
+	unrestrictedTok := SignAccessTokenWithKeys(secret, room, "user-all", exp, []string{CapRead, CapWrite}, nil, "jti-all")
+	claimsAll, ok := VerifyAccessToken(secret, room, unrestrictedTok, now)
+	if !ok {
+		t.Fatal("failed to verify unrestricted token")
+	}
+	if !claimsAll.CanWriteKey("any:random:key") {
+		t.Fatal("unrestricted token should allow any key")
+	}
+
+	// 3. Token with prefix wildcards and exact keys
+	scopedTok := SignAccessTokenWithKeys(secret, room, "user-123", exp, []string{CapRead, CapWrite}, []string{
+		"user:123:*",
+		"public:notice",
+	}, "jti-scoped")
+
+	claimsScoped, ok := VerifyAccessToken(secret, room, scopedTok, now)
+	if !ok {
+		t.Fatal("failed to verify scoped token")
+	}
+
+	// Allowed patterns
+	if !claimsScoped.CanWriteKey("user:123:profile") {
+		t.Fatal("expected user:123:profile to be allowed")
+	}
+	if !claimsScoped.CanWriteKey("user:123:settings:theme") {
+		t.Fatal("expected user:123:settings:theme to be allowed")
+	}
+	if !claimsScoped.CanWriteKey("public:notice") {
+		t.Fatal("expected exact match public:notice to be allowed")
+	}
+
+	// Forbidden patterns
+	if claimsScoped.CanWriteKey("user:456:profile") {
+		t.Fatal("user:456:profile should be forbidden")
+	}
+	if claimsScoped.CanWriteKey("public:notice:other") {
+		t.Fatal("public:notice:other should be forbidden (exact match only)")
+	}
+	if claimsScoped.CanWriteKey("admin:config") {
+		t.Fatal("admin:config should be forbidden")
+	}
+
+	// 4. Global wildcard "*"
+	wildcardTok := SignAccessTokenWithKeys(secret, room, "user-star", exp, []string{CapRead, CapWrite}, []string{"*"}, "jti-star")
+	claimsStar, ok := VerifyAccessToken(secret, room, wildcardTok, now)
+	if !ok {
+		t.Fatal("failed to verify star token")
+	}
+	if !claimsStar.CanWriteKey("anything:here") {
+		t.Fatal("star token should allow anything")
 	}
 }

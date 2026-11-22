@@ -112,3 +112,21 @@ test("text edits are undoable and redoable as one batch", () => {
   assert.equal(sw.redo(), true);
   assert.equal(text.text(), "hello");
 });
+
+test("block text optimization groups continuous typing runs into chunks", () => {
+  const { text, sw } = newText("A");
+  // Insert a large paragraph using insertChunk / { chunk: true }
+  const longParagraph = "The quick brown fox jumps over the lazy dog. ".repeat(20);
+  const ids = text.insertAt(0, longParagraph, { chunk: true });
+
+  // Exactly 1 register created instead of hundreds
+  assert.equal(ids.length, 1);
+  assert.equal(text.text(), longParagraph);
+  assert.equal(sw.doc.entries.size, 1);
+
+  // insertChunk directly
+  const chunkId = text.insertChunk(1, " [appended chunk]");
+  assert.ok(chunkId);
+  assert.equal(text.text(), longParagraph + " [appended chunk]");
+  assert.equal(sw.doc.entries.size, 2);
+});

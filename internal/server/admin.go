@@ -53,13 +53,12 @@ func (h *Hub) ServeAdminRooms(w http.ResponseWriter, req *http.Request) {
 
 // ServeAdminRoomAction performs an operator action on one room:
 //
+//	GET  /admin/api/rooms/{room}/state
+//	GET  /admin/api/rooms/{room}/snapshot
 //	POST /admin/api/rooms/{room}/resnapshot
 //	POST /admin/api/rooms/{room}/evict
+//	POST /admin/api/rooms/{room}/purge
 func (h *Hub) ServeAdminRoomAction(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if !originOK(req.Header.Get("Origin"), h.cfg.Origins) {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
@@ -75,6 +74,37 @@ func (h *Hub) ServeAdminRoomAction(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	room, action := rest[:idx], rest[idx+1:]
+
+	if req.Method == http.MethodGet {
+		switch action {
+		case "state", "live":
+			live, ok := h.LiveRoom(room)
+			if !ok {
+				http.Error(w, "room not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "room": room, "state": live})
+			return
+		case "snapshot":
+			snap, ok := h.ExportRoom(room)
+			if !ok {
+				http.Error(w, "room not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "room": room, "snapshot": snap})
+			return
+		default:
+			http.Error(w, "unknown action", http.StatusNotFound)
+			return
+		}
+	}
+
+	if req.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	var ok bool
 	switch action {
 	case "resnapshot":

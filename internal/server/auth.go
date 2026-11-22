@@ -35,19 +35,45 @@ const (
 
 // TokenClaims describes an access token after verification.
 type TokenClaims struct {
-	Room string
-	Sub  string
-	Exp  int64
-	Iat  int64
-	Nbf  int64
-	JTI  string
-	Caps map[string]bool
-	Raw  string
+	Room        string
+	Sub         string
+	Exp         int64
+	Iat         int64
+	Nbf         int64
+	JTI         string
+	Caps        map[string]bool
+	AllowedKeys []string
+	Raw         string
 }
 
 // Can reports whether the token includes the requested capability.
 func (c TokenClaims) Can(cap string) bool {
 	return c.Caps[cap]
+}
+
+// CanWriteKey reports whether the token permits writes to the given key.
+// It requires CapWrite. If AllowedKeys is empty, any key is allowed.
+// If AllowedKeys is non-empty, the key must match at least one pattern
+// (supports exact match, global wildcard "*", or prefix wildcards like "chat:*").
+func (c TokenClaims) CanWriteKey(key string) bool {
+	if !c.Can(CapWrite) {
+		return false
+	}
+	if len(c.AllowedKeys) == 0 {
+		return true
+	}
+	for _, pattern := range c.AllowedKeys {
+		if pattern == "*" || pattern == key {
+			return true
+		}
+		if strings.HasSuffix(pattern, "*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(key, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // HasAny reports whether the token includes at least one capability.
@@ -206,13 +232,35 @@ func parseCapsList(caps []string) map[string]bool {
 }
 
 type tokenPayload struct {
-	Room string   `json:"room,omitempty"`
-	Sub  string   `json:"sub,omitempty"`
-	Exp  int64    `json:"exp"`
-	Iat  int64    `json:"iat,omitempty"`
-	Nbf  int64    `json:"nbf,omitempty"`
-	Caps []string `json:"caps,omitempty"`
-	JTI  string   `json:"jti,omitempty"`
+	Room        string   `json:"room,omitempty"`
+	Sub         string   `json:"sub,omitempty"`
+	Exp         int64    `json:"exp"`
+	Iat         int64    `json:"iat,omitempty"`
+	Nbf         int64    `json:"nbf,omitempty"`
+	Caps        []string `json:"caps,omitempty"`
+	JTI         string   `json:"jti,omitempty"`
+	AllowedKeys []string `json:"keys,omitempty"`
+}
+
+// SignAccessTokenWithKeys issues a token scoped to specific capabilities and allowed key patterns.
+func SignAccessTokenWithKeys(secret, room, subject string, exp int64, caps []string, allowedKeys []string, jti string) string {
+	if jti == "" {
+		jti = randomJTI()
+	}
+	iat := timeNow().Unix()
+	payload := tokenPayload{
+		Room:        room,
+		Sub:         subject,
+		Exp:         exp,
+		Iat:         iat,
+		Nbf:         iat,
+		Caps:        normalizeCapsList(caps),
+		JTI:         jti,
+		AllowedKeys: allowedKeys,
+	}
+	raw, _ := json.Marshal(payload)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	return "v2." + encoded + "." + sign(secret, room+"|v2|"+encoded)
 }
 
 // VerifyToken reports whether token grants access to room at time now (unix s).
@@ -276,14 +324,15 @@ func VerifyAccessToken(secret, room, token string, now int64) (TokenClaims, bool
 			payload.Room = room
 		}
 		claims = TokenClaims{
-			Room: payload.Room,
-			Sub:  payload.Sub,
-			Exp:  payload.Exp,
-			Iat:  payload.Iat,
-			Nbf:  payload.Nbf,
-			JTI:  payload.JTI,
-			Caps: parseCapsList(payload.Caps),
-			Raw:  token,
+			Room:        payload.Room,
+			Sub:         payload.Sub,
+			Exp:         payload.Exp,
+			Iat:         payload.Iat,
+			Nbf:         payload.Nbf,
+			JTI:         payload.JTI,
+			Caps:        parseCapsList(payload.Caps),
+			AllowedKeys: payload.AllowedKeys,
+			Raw:         token,
 		}
 		return claims, true
 	case 4:

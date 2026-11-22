@@ -29,7 +29,12 @@ export class SequenceText {
 
   on(event: "change", cb: (text: string) => void): this;
 
-  insertAt(index: number, value: string): string[];
+  insertAt(
+    index: number,
+    value: string,
+    opts?: { chunk?: boolean; marks?: Record<string, unknown> }
+  ): string[];
+  insertChunk(index: number, value: string, marks?: Record<string, unknown>): string | null;
   deleteAt(index: number, count?: number): number;
   replaceRange(index: number, count: number, value: string): void;
   markRange(index: number, count: number, marks: Record<string, unknown> | null): void;

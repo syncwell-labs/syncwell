@@ -5,7 +5,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X syncwell/internal/version.Version=$(VERSION) -X syncwell/internal/version.Commit=$(COMMIT) -X syncwell/internal/version.Date=$(BUILD_DATE)
 
-.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e browser-e2e-chromium browser-e2e-firefox a11y e2e persist restore-drill gc chaos bench vuln vet fmt fmt-check clean docker container-smoke test-multi-client test-python redis-e2e workflows release-dry-run redis-drill soak soak-quick help
+.PHONY: all build run loadtest-bin test test-js sdk-install sdk-build sdk-typecheck docs-install docs-build docs-dev cover-check browser-e2e browser-e2e-chromium browser-e2e-firefox a11y e2e persist restore-drill gc chaos bench vuln vet fmt fmt-check clean docker container-smoke test-multi-client test-python python-build redis-e2e workflows release-dry-run redis-drill soak soak-quick help
 
 help:
 	@echo "Syncwell make targets:"
@@ -123,7 +123,12 @@ restore-drill: build
 
 # Polyglot proof: dependency-free Python client against the real server.
 test-python: build
+	python3 -m unittest clients/python/test_crdt.py -v
 	python3 -m unittest clients/python/test_client_e2e.py -v
+
+python-build:
+	mkdir -p clients/python/dist
+	cd clients/python && python3 -c "import setuptools.build_meta as b; b.build_wheel('dist'); b.build_sdist('dist')"
 
 redis-e2e: build
 	NODE_TLS_REJECT_UNAUTHORIZED=0 node tests/e2e/redis_rehome.mjs

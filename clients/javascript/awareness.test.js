@@ -76,3 +76,30 @@ test("stale peers are pruned after the timeout", async () => {
   assert.equal(awareness.getStates().length, 1);
   awareness.close();
 });
+
+test("awareness throttles rapid presence updates when presenceThrottleMs is set", async () => {
+  const sw = fakeClient();
+  const awareness = new Awareness(sw, {
+    user: { id: "u1" },
+    start: false,
+    presenceThrottleMs: 30,
+  });
+
+  // First call sends immediately
+  awareness.setCursor({ index: 1 });
+  assert.equal(sw.sent.length, 1);
+  assert.deepEqual(sw.sent[0].state.cursor, { index: 1, selectionEnd: 1 });
+
+  // Rapid updates within throttle window should be coalesced
+  awareness.setCursor({ index: 2 });
+  awareness.setCursor({ index: 3 });
+  awareness.setCursor({ index: 4 });
+  assert.equal(sw.sent.length, 1); // Not sent yet
+
+  // Wait for throttle timer to fire
+  await new Promise((r) => setTimeout(r, 45));
+  assert.equal(sw.sent.length, 2);
+  assert.deepEqual(sw.sent[1].state.cursor, { index: 4, selectionEnd: 4 });
+
+  awareness.close();
+});

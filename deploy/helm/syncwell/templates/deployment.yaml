@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "syncwell.fullname" . }}
+  labels:
+    {{- include "syncwell.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "syncwell.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "syncwell.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "syncwell.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: SYNCWELL_ADDR
+              value: {{ .Values.config.addr | quote }}
+            - name: SYNCWELL_DATA_DIR
+              value: {{ .Values.persistence.mountPath | quote }}
+            - name: SYNCWELL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "syncwell.fullname" . }}-secret
+                  key: secret
+                  optional: true
+            - name: SYNCWELL_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "syncwell.fullname" . }}-secret
+                  key: admin-token
+                  optional: true
+            {{- if .Values.redis.enabled }}
+            - name: SYNCWELL_REDIS_ADDR
+              value: {{ .Values.redis.addr | quote }}
+            - name: SYNCWELL_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "syncwell.fullname" . }}-secret
+                  key: redis-password
+                  optional: true
+            {{- end }}
+          {{- if .Values.draining.enabled }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ .Values.draining.preStopSleepSeconds }}"]
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "syncwell.fullname" . }}-pvc
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

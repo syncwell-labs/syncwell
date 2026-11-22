@@ -152,6 +152,10 @@ func (c *Client) canWrite() bool {
 	return c.claims.Can(CapWrite)
 }
 
+func (c *Client) canWriteKey(key string) bool {
+	return c.claims.CanWriteKey(key)
+}
+
 func (c *Client) canPresence() bool {
 	return c.claims.Can(CapPresence)
 }
@@ -804,6 +808,10 @@ func (r *Room) loop() {
 				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"write capability required"`)})
 				continue
 			}
+			if !c.client.canWriteKey(c.in.Key) {
+				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"unauthorized key write"`)})
+				continue
+			}
 			if c.in.Epoch != r.epoch {
 				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"stale epoch"`)})
 				continue
@@ -839,6 +847,17 @@ func (r *Room) loop() {
 			}
 			if len(c.in.State) > 0 && !c.client.canWrite() {
 				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"write capability required"`)})
+				continue
+			}
+			keysOK := true
+			for k := range c.in.State {
+				if !c.client.canWriteKey(k) {
+					keysOK = false
+					break
+				}
+			}
+			if !keysOK {
+				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"unauthorized key write"`)})
 				continue
 			}
 			// Validate vector timestamps: client's vector must not be ahead of
@@ -908,6 +927,17 @@ func (r *Room) loop() {
 		case "merge":
 			if !c.client.canWrite() {
 				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"write capability required"`)})
+				continue
+			}
+			keysOK := true
+			for k := range c.in.State {
+				if !c.client.canWriteKey(k) {
+					keysOK = false
+					break
+				}
+			}
+			if !keysOK {
+				r.sendTo(c.client, Outbound{Type: msgError, Data: json.RawMessage(`"unauthorized key write"`)})
 				continue
 			}
 			if c.in.Epoch != r.epoch {
@@ -2126,6 +2156,45 @@ func (h *Hub) EvictRoomWithRequestID(id, requestID string) bool {
 	case <-time.After(2 * time.Second):
 		return false
 	}
+}
+
+// ExportRoom retrieves the room's current CRDT snapshot (all registers and tombstones).
+func (h *Hub) ExportRoom(id string) (map[string]crdt.Register, bool) {
+	r := h.lookupRoom(id)
+	if r == nil {
+		return nil, false
+	}
+	result := make(chan map[string]crdt.Register, 1)
+	select {
+	case r.cmds <- command{kind: "export", export: result}:
+	case <-r.done:
+		return nil, false
+	case <-time.After(2 * time.Second):
+		return nil, false
+	}
+	select {
+	case snap := <-result:
+		return snap, snap != nil
+	case <-r.done:
+		return nil, false
+	case <-time.After(2 * time.Second):
+		return nil, false
+	}
+}
+
+// LiveRoom retrieves the room's live key-value state (non-deleted registers).
+func (h *Hub) LiveRoom(id string) (map[string]json.RawMessage, bool) {
+	snap, ok := h.ExportRoom(id)
+	if !ok {
+		return nil, false
+	}
+	live := make(map[string]json.RawMessage, len(snap))
+	for k, reg := range snap {
+		if !reg.Deleted {
+			live[k] = reg.Value
+		}
+	}
+	return live, true
 }
 
 // Stats queries every room's owner goroutine and returns a snapshot map. Safe to

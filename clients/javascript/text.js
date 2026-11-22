@@ -121,7 +121,11 @@ export class SequenceText {
   }
 
   /** Insert text at a character offset. Returns the inserted element ids. */
-  insertAt(index, value) {
+  insertAt(index, value, opts = {}) {
+    if (opts.chunk) {
+      const id = this.insertChunk(index, value, opts.marks);
+      return id ? [id] : [];
+    }
     const ids = this.doc.visibleIds();
     index = clamp(index, 0, ids.length);
     const leftId = index > 0 ? ids[index - 1] : "";
@@ -143,6 +147,30 @@ export class SequenceText {
       }
     });
     return inserted;
+  }
+
+  /**
+   * Insert a block of text as a single CRDT node (chunk optimization).
+   * Reduces register count and tombstone GC pressure for bulk text or continuous typing runs.
+   */
+  insertChunk(index, value, marks = undefined) {
+    if (!value) return null;
+    const ids = this.doc.visibleIds();
+    index = clamp(index, 0, ids.length);
+    const leftId = index > 0 ? ids[index - 1] : "";
+    const rightId = index < ids.length ? ids[index] : null;
+    const leftRank = this._rankOf(leftId);
+    const rightRank = rightId ? this._rankOf(rightId) : null;
+
+    const rank = rankBetween(leftRank, rightRank);
+    const id = this._newId();
+    const node = { id, after: leftId, rank, text: String(value) };
+    if (marks) node.marks = marks;
+
+    this.sw.batch(() => {
+      this._writeNode(node);
+    });
+    return id;
   }
 
   /** Delete `count` code points starting at offset `index`. */

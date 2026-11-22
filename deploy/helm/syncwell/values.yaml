@@ -1,0 +1,106 @@
+# Default values for syncwell.
+# This is a YAML-formatted file.
+
+replicaCount: 2
+
+image:
+  repository: syncwell/syncwell
+  pullPolicy: IfNotPresent
+  tag: "0.5.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+# Syncwell server configuration
+config:
+  addr: ":8080"
+  secret: ""
+  adminToken: ""
+  maxRooms: 100000
+  idleRoomTTL: "10m"
+  limits:
+    maxMessageBytes: 1048576
+    maxMessagesPerSecond: 120
+    maxDocBytes: 16777216
+
+# Persistence configuration (Append-only storage)
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /var/lib/syncwell
+
+# Redis cluster relay (multi-pod horizontal scaling)
+redis:
+  enabled: false
+  addr: "redis-master:6379"
+  password: ""
+  cluster: false
+
+# Graceful connection draining (Pod preStop lifecycle hook)
+draining:
+  enabled: true
+  preStopSleepSeconds: 15
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "syncwell"
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+  hosts:
+    - host: syncwell.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

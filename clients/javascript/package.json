@@ -29,6 +29,11 @@
       "import": "./dist/esm/text.js",
       "require": "./dist/cjs/text.cjs"
     },
+    "./array": {
+      "types": "./array.d.ts",
+      "import": "./dist/esm/array.js",
+      "require": "./dist/cjs/array.cjs"
+    },
     "./awareness": {
       "types": "./awareness.d.ts",
       "import": "./dist/esm/awareness.js",
@@ -43,6 +48,26 @@
       "types": "./storage-node.d.ts",
       "import": "./storage-node.js",
       "require": "./storage-node.js"
+    },
+    "./react": {
+      "types": "./react.d.ts",
+      "import": "./dist/esm/react.js",
+      "require": "./dist/cjs/react.cjs"
+    },
+    "./monaco": {
+      "types": "./monaco.d.ts",
+      "import": "./dist/esm/monaco.js",
+      "require": "./dist/cjs/monaco.cjs"
+    },
+    "./tiptap": {
+      "types": "./tiptap.d.ts",
+      "import": "./dist/esm/tiptap.js",
+      "require": "./dist/cjs/tiptap.cjs"
+    },
+    "./devtools": {
+      "types": "./devtools.d.ts",
+      "import": "./dist/esm/devtools.js",
+      "require": "./dist/cjs/devtools.cjs"
     }
   },
   "sideEffects": false,
@@ -51,13 +76,26 @@
     "crdt.js",
     "sequence.js",
     "text.js",
+    "array.js",
     "awareness.js",
     "storage.js",
     "storage-node.js",
+    "react.js",
+    "monaco.js",
+    "tiptap.js",
+    "devtools.js",
     "*.d.ts",
     "dist/",
     "README.md"
   ],
+  "peerDependencies": {
+    "react": ">=16.8.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "scripts": {
     "test": "node --test",
     "build": "node build.mjs",
@@ -87,6 +125,8 @@
   "license": "MIT",
   "devDependencies": {
     "esbuild": "^0.28.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.9.3"
   }
 }

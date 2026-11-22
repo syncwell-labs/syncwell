@@ -83,9 +83,58 @@ void text.length;
 void text.marksAt(0);
 void rankBetween("a", "b");
 
+import { CRDTArray } from "./array.js";
+const list = new CRDTArray<string>(sw, { prefix: "tasks:" });
+list.push("task 1");
+list.insert(0, "task 0");
+list.move(0, 1);
+list.delete(0);
+void list.toArray();
+void list.length;
+list.destroy();
+
 const awareness = new Awareness(sw, { user: { id: "u1", name: "Ada" } });
 awareness.setCursor({ index: 1, selectionEnd: 3 });
 awareness.setSelection(2);
 awareness.on("update", (peers: AwarenessPeer[]) => void peers.length);
 void awareness.getStates();
 awareness.close();
+
+import {
+  SyncwellProvider,
+  useSyncwell,
+  useAwareness,
+  useStorage,
+  usePresence,
+  useOthers,
+  useSelf,
+  useMutation,
+  useHistory,
+  useArray,
+  LiveCursors,
+  LiveAvatars,
+} from "./react.js";
+
+void SyncwellProvider;
+void useSyncwell;
+void useAwareness;
+void useStorage;
+void usePresence;
+void useOthers;
+void useSelf;
+void useMutation;
+void useHistory;
+void useArray;
+void LiveCursors;
+void LiveAvatars;
+
+import { bindMonaco } from "./monaco.js";
+import { bindProseMirror, syncwellCollaboration } from "./tiptap.js";
+import { mountDevTools } from "./devtools.js";
+
+void bindMonaco;
+void bindProseMirror;
+void syncwellCollaboration;
+void mountDevTools;
+
+

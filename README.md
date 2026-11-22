@@ -174,6 +174,95 @@ peers.setSelection(5);
 text.on("change", () => console.log(text.text()));
 ```
 
+### First-class React 18+ Integration & Multiplayer UI (`syncwell-client/react`)
+
+SSR-safe hooks and ready-to-use drop-in UI components:
+
+```tsx
+import {
+  SyncwellProvider,
+  useStorage,
+  useArray,
+  LiveCursors,
+  LiveAvatars,
+} from "syncwell-client/react";
+
+function Workspace() {
+  const [title, setTitle] = useStorage("title", "Untitled");
+  const [tasks, taskList] = useArray("tasks:");
+
+  return (
+    <div style={{ position: "relative", minHeight: "100vh" }}>
+      {/* 1. Live pointer arrows for all participants */}
+      <LiveCursors />
+
+      {/* 2. Top bar with active avatars */}
+      <header className="flex justify-between items-center p-4">
+        <input value={title} onChange={(e) => setTitle(e.target.value)} />
+        <LiveAvatars limit={5} size={32} />
+      </header>
+
+      {/* 3. Conflict-free collaborative list with re-ordering */}
+      <ul>
+        {tasks.map((task, idx) => (
+          <li key={taskList.getId(idx)}>
+            <span>{task.text}</span>
+            <button onClick={() => taskList.move(idx, idx - 1)}>↑</button>
+            <button onClick={() => taskList.delete(idx)}>✕</button>
+          </li>
+        ))}
+      </ul>
+      <button onClick={() => taskList.push({ text: "New Item" })}>+ Add</button>
+    </div>
+  );
+}
+```
+
+### Collaborative Lists & Re-ordering (`CRDTArray`)
+
+Conflict-free ordered array CRDT with fractional indexing:
+- `insert(index, val)`, `push(...vals)`, `unshift(...vals)`
+- `move(fromIndex, toIndex)`: atomic drag-and-drop re-ordering without duplication
+- `delete(index)`, `deleteById(id)`
+
+### Database Sync & Webhooks (PostgreSQL / Supabase)
+
+Syncwell notifies external services through HMAC-SHA256 signed webhooks (`room.persisted`, `room.evicted`). Backends query `GET /admin/api/rooms/{room}/state` to upsert live document JSON into PostgreSQL `jsonb` or SQLite automatically. See [docs/self-hosting/database-sync](./website/self-hosting/database-sync.md).
+
+### Editor Adapters & Visual CRDT DevTools
+
+- **Monaco Editor** (`syncwell-client/monaco`): Zero-dependency Monaco adapter with live remote selections and cursors.
+- **TipTap & ProseMirror** (`syncwell-client/tiptap`): Rich-text collaborative binding for TipTap/ProseMirror views.
+- **CRDT DevTools Overlay** (`syncwell-client/devtools`): Press `Ctrl+Shift+S` to inspect live CRDT registers, Lamport clocks, causal tombstones, and the incoming op stream directly in the browser.
+
+### Python Client (`syncwell-client`)
+
+Install from PyPI:
+
+```bash
+pip install syncwell-client
+```
+
+```python
+from syncwell import Syncwell, Clock, LWWMap
+
+client = Syncwell("ws://localhost:8080/ws", "my-room", token="pass")
+client.connect()
+client.set("status", "ready")
+```
+
+### Kubernetes Helm Chart (`deploy/helm/syncwell`)
+
+Deploy an auto-scaling, HA collaborative cluster:
+
+```bash
+helm install syncwell ./deploy/helm/syncwell \
+  --namespace syncwell --create-namespace \
+  --set config.secret="$SECRET" \
+  --set config.adminToken="$ADMIN"
+```
+Features zero-downtime rolling deploys via `preStop` WebSocket connection draining, Prometheus metric scraping, and optional Redis pub/sub relay.
+
 For a bundler/Node setup install the npm package (`npm install syncwell-client`,
 same API, TypeScript types included) or import the copy the server serves from `/sdk/`.
 
@@ -247,12 +336,12 @@ cmd/loadtest/        load/soak harness
 internal/crdt/       the CRDT core + property test suite  ← the heart
 internal/server/     room hub, websocket pumps, presence relay, admin, webhooks
 internal/store/      append-only persistence, snapshots, backup/restore
-clients/javascript/  typed browser/Node client: map, text, awareness, storage
-clients/python/      dependency-free Python client + real-server E2E test
+clients/javascript/  typed browser/Node client: map, text, awareness, react, monaco, tiptap, devtools
+clients/python/      syncwell-client PyPI package: LWWMap, Clock, client
 examples/            React, Vue, Svelte, vanilla, and Node integrations
 examples/demos/      multiplayer state, kanban, and collaborative text demos
 tests/               e2e/, a11y/, bench/, conformance/ harnesses
-deploy/              proxies/, systemd/, monitoring/ deployment artifacts
+deploy/              helm/, proxies/, systemd/, monitoring/ deployment artifacts
 website/             VitePress docs site (quickstart, SDK, self-hosting, reference)
 docs/                architecture/ protocol/ operations/ product/ standards/ audits/
 ```

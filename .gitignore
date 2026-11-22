@@ -32,6 +32,9 @@ npm-debug.log*
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
+/clients/python/build/
+/clients/python/dist/
 
 # Local secrets and keys (never commit)
 .env

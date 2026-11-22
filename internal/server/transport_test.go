@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -437,5 +438,117 @@ func TestServeWSTokenCarriers(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, _, err := conn.ReadMessage(); err != nil {
 		t.Fatalf("read snapshot after subprotocol auth: %v", err)
+	}
+}
+
+func TestServeWS_CompressionNegotiation(t *testing.T) {
+	h := newTestHub()
+	ts := httptest.NewServer(http.HandlerFunc(h.ServeWS))
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?room=compression-room"
+
+	dialer := websocket.Dialer{
+		EnableCompression: true,
+		HandshakeTimeout:  2 * time.Second,
+	}
+
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial with compression: %v", err)
+	}
+	defer conn.Close()
+
+	if resp == nil {
+		t.Fatal("response is nil")
+	}
+
+	extensions := resp.Header.Get("Sec-WebSocket-Extensions")
+	if !strings.Contains(extensions, "permessage-deflate") {
+		t.Fatalf("expected Sec-WebSocket-Extensions to contain permessage-deflate, got %q", extensions)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read snapshot over compressed connection: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(msg, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal snapshot: %v", err)
+	}
+	if parsed["type"] != "snapshot" {
+		t.Fatalf("expected snapshot message, got %v", parsed["type"])
+	}
+}
+
+func TestServeWS_KeyLevelRBACEnforcement(t *testing.T) {
+	const secret = "rbac-secret"
+	h := NewHub(Config{
+		Secret: secret,
+		Limits: Limits{}.withDefaults(),
+	})
+	ts := httptest.NewServer(http.HandlerFunc(h.ServeWS))
+	defer ts.Close()
+
+	token := SignAccessTokenWithKeys(secret, "rbac-room", "user-1", time.Now().Add(time.Hour).Unix(), []string{CapRead, CapWrite}, []string{"allowed:*"}, "jti-rbac")
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?room=rbac-room&token=" + token
+
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial error: %v", err)
+	}
+	defer conn.Close()
+
+	// Read initial snapshot
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read snapshot error: %v", err)
+	}
+
+	// 1. Send op for an allowed key
+	allowedOp := map[string]any{
+		"type":     "op",
+		"key":      "allowed:item1",
+		"epoch":    1,
+		"register": map[string]any{"v": "valid", "t": map[string]any{"c": 1, "n": "user-1"}},
+	}
+	if err := conn.WriteJSON(allowedOp); err != nil {
+		t.Fatalf("failed to write allowed op: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read allowed op echo: %v", err)
+	}
+	var res map[string]any
+	_ = json.Unmarshal(msg, &res)
+	if res["type"] != "op" || res["key"] != "allowed:item1" {
+		t.Fatalf("expected op echo for allowed:item1, got: %s", msg)
+	}
+
+	// 2. Send op for a forbidden key
+	forbiddenOp := map[string]any{
+		"type":     "op",
+		"key":      "forbidden:item2",
+		"epoch":    1,
+		"register": map[string]any{"v": "bad", "t": map[string]any{"c": 2, "n": "user-1"}},
+	}
+	if err := conn.WriteJSON(forbiddenOp); err != nil {
+		t.Fatalf("failed to write forbidden op: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, errMsg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read error message: %v", err)
+	}
+	var errRes map[string]any
+	_ = json.Unmarshal(errMsg, &errRes)
+	if errRes["type"] != "error" || !strings.Contains(fmt.Sprint(errRes["data"]), "unauthorized key write") {
+		t.Fatalf("expected unauthorized key write error, got: %s", errMsg)
 	}
 }

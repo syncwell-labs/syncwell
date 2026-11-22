@@ -118,6 +118,9 @@ export class Syncwell {
     this._batchChanged = false;
     this._replaying = false;
     this._saveChain = null;
+    this.presenceThrottleMs = Math.max(0, Number(opts.presenceThrottleMs) || 0);
+    this._presenceTimer = null;
+    this._throttledPresence = null;
 
     // The local CRDT replica. node id = clientId so its writes are globally
     // ordered against every other replica.
@@ -234,8 +237,11 @@ export class Syncwell {
     const afterDisconnect = () => {
       clearInterval(this._ackTimer);
       clearTimeout(this._helloTimer);
+      clearTimeout(this._presenceTimer);
       this._ackTimer = null;
       this._helloTimer = null;
+      this._presenceTimer = null;
+      this._throttledPresence = null;
       this._ready = false;
       this._emit("close");
       if (this._closed) return;
@@ -276,9 +282,12 @@ export class Syncwell {
     clearInterval(this._ackTimer);
     clearTimeout(this._reconnectTimer);
     clearTimeout(this._helloTimer);
+    clearTimeout(this._presenceTimer);
     this._ackTimer = null;
     this._reconnectTimer = null;
     this._helloTimer = null;
+    this._presenceTimer = null;
+    this._throttledPresence = null;
     this._ready = false;
     if (this.ws) this.ws.close();
   }
@@ -621,6 +630,25 @@ export class Syncwell {
       // snapshot/delta makes the socket writable. Without this, a caller that
       // publishes on `open` loses its initial cursor/identity.
       this._pendingPresence = data;
+      return;
+    }
+    if (this.presenceThrottleMs > 0) {
+      this._throttledPresence = data;
+      if (!this._presenceTimer) {
+        this._throttledPresence = null;
+        this._sendRaw({ type: "presence", data });
+        this._presenceTimer = setTimeout(() => {
+          this._presenceTimer = null;
+          if (this._throttledPresence !== null) {
+            const next = this._throttledPresence;
+            this._throttledPresence = null;
+            if (this._ready) {
+              this.presence(next);
+            }
+          }
+        }, this.presenceThrottleMs);
+        this._presenceTimer.unref?.();
+      }
       return;
     }
     this._send({ type: "presence", data });

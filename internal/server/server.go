@@ -31,8 +31,9 @@ import (
 var upgrader = websocket.Upgrader{
 	// OriginPolicy is enforced explicitly before Upgrade; gorilla's own check is
 	// disabled so the policy can also reject missing Origin headers.
-	CheckOrigin:      func(*http.Request) bool { return true },
-	HandshakeTimeout: 10 * time.Second,
+	CheckOrigin:       func(*http.Request) bool { return true },
+	HandshakeTimeout:  10 * time.Second,
+	EnableCompression: true,
 }
 
 const (
@@ -714,6 +715,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, req *http.Request) {
 		LogRequestEvent(req, "ws_upgrade_error", map[string]any{"error": err.Error(), "room": h.logRoomID(roomID)})
 		return
 	}
+	conn.EnableWriteCompression(true)
 	span.SetAttributes(attribute.Int("syncwell.caps", len(claims.Caps)))
 	client := &Client{
 		id:            nextClientID(),

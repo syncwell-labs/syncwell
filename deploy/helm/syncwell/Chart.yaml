@@ -1,0 +1,18 @@
+apiVersion: v2
+name: syncwell
+description: Enterprise-grade real-time collaboration engine based on conflict-free replicated data types (CRDTs).
+type: application
+version: 0.5.0
+appVersion: "0.5.0"
+keywords:
+  - crdt
+  - realtime
+  - websocket
+  - collaboration
+  - syncwell
+home: https://syncwell.org
+sources:
+  - https://github.com/syncwell-labs/syncwell
+maintainers:
+  - name: Syncwell Team
+    email: maintainers@syncwell.org

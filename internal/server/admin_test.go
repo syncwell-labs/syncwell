@@ -1,10 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"syncwell/internal/crdt"
 )
 
 func TestAdminAllowedOpenWhenNoTokenConfigured(t *testing.T) {
@@ -93,5 +97,66 @@ func TestConfigValidateSecretRotation(t *testing.T) {
 	}
 	if err := (Config{Secret: "new", PreviousSecrets: []string{"old"}}).Validate(); err != nil {
 		t.Fatalf("valid rotation config rejected: %v", err)
+	}
+}
+
+func TestAdminRoomStateAndSnapshotExport(t *testing.T) {
+	h := NewHub(Config{AdminToken: "admin-pass"})
+	room, err := h.room("export-room")
+	if err != nil {
+		t.Fatalf("failed to create room: %v", err)
+	}
+	// Seed state via cluster snapshot command
+	room.cmds <- command{
+		kind: "cluster",
+		cluster: &ClusterEvent{
+			Room: "export-room",
+			Kind: "snapshot",
+			From: "remote-node",
+			State: map[string]crdt.Register{
+				"title": {
+					Value: json.RawMessage(`"Collaborative Doc"`),
+					TS:    crdt.Timestamp{Counter: 1, Node: "remote-node"},
+				},
+			},
+		},
+	}
+	// Wait a moment for goroutine to process op
+	time.Sleep(50 * time.Millisecond)
+
+	// Test GET /admin/api/rooms/export-room/state
+	reqState := httptest.NewRequest(http.MethodGet, "/admin/api/rooms/export-room/state", nil)
+	reqState.Header.Set("Authorization", "Bearer admin-pass")
+	wState := httptest.NewRecorder()
+	h.ServeAdminRoomAction(wState, reqState)
+
+	if wState.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wState.Code, wState.Body.String())
+	}
+	if !strings.Contains(wState.Body.String(), "Collaborative Doc") {
+		t.Fatalf("expected state to contain 'Collaborative Doc', got: %s", wState.Body.String())
+	}
+
+	// Test GET /admin/api/rooms/export-room/snapshot
+	reqSnap := httptest.NewRequest(http.MethodGet, "/admin/api/rooms/export-room/snapshot", nil)
+	reqSnap.Header.Set("Authorization", "Bearer admin-pass")
+	wSnap := httptest.NewRecorder()
+	h.ServeAdminRoomAction(wSnap, reqSnap)
+
+	if wSnap.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wSnap.Code, wSnap.Body.String())
+	}
+	if !strings.Contains(wSnap.Body.String(), `"snapshot"`) {
+		t.Fatalf("expected response to contain 'snapshot', got: %s", wSnap.Body.String())
+	}
+
+	// Test GET for non-existent room
+	reqMissing := httptest.NewRequest(http.MethodGet, "/admin/api/rooms/non-existent/state", nil)
+	reqMissing.Header.Set("Authorization", "Bearer admin-pass")
+	wMissing := httptest.NewRecorder()
+	h.ServeAdminRoomAction(wMissing, reqMissing)
+
+	if wMissing.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing room, got %d", wMissing.Code)
 	}
 }

@@ -37,7 +37,10 @@ export class Awareness {
     this.handlers = {};
     this.heartbeatMs = opts.heartbeat ?? DEFAULT_HEARTBEAT;
     this.timeoutMs = opts.timeout ?? DEFAULT_TIMEOUT;
+    this.presenceThrottleMs = Math.max(0, Number(opts.presenceThrottleMs) || 0);
     this._timer = null;
+    this._throttleTimer = null;
+    this._pendingSend = false;
     this._onPresence = (event) => this._receive(event);
     this._onLeave = (event) => {
       if (this.remote.delete(event.clientId)) this._emit("remove", event.clientId);
@@ -64,6 +67,9 @@ export class Awareness {
   stop() {
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
+    if (this._throttleTimer) clearTimeout(this._throttleTimer);
+    this._throttleTimer = null;
+    this._pendingSend = false;
     return this;
   }
 
@@ -123,6 +129,25 @@ export class Awareness {
   }
 
   _send() {
+    if (this.presenceThrottleMs > 0) {
+      this._pendingSend = true;
+      if (!this._throttleTimer) {
+        this._pendingSend = false;
+        this._doSend();
+        this._throttleTimer = setTimeout(() => {
+          this._throttleTimer = null;
+          if (this._pendingSend) {
+            this._send();
+          }
+        }, this.presenceThrottleMs);
+        this._throttleTimer.unref?.();
+      }
+      return;
+    }
+    this._doSend();
+  }
+
+  _doSend() {
     try {
       this.sw.presence({
         type: "awareness",

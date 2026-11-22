@@ -4,12 +4,13 @@
 import { build } from "esbuild";
 import { mkdir, rm } from "node:fs/promises";
 
-const entries = ["syncwell", "crdt", "sequence", "text", "awareness", "storage"];
+const entries = ["syncwell", "crdt", "sequence", "text", "array", "awareness", "storage", "react", "monaco", "tiptap", "devtools"];
 const common = {
   bundle: true,
   sourcemap: true,
   target: ["es2020"],
   logLevel: "info",
+  external: ["react"],
 };
 
 await rm("dist", { recursive: true, force: true });
