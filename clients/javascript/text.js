@@ -26,8 +26,9 @@ export function rankBetween(left, right) {
   if (left === "") {
     const i = DIGITS.indexOf(right[0]);
     if (i > 0) return DIGITS[Math.floor(i / 2)];
-    // right starts with "0": "0" is still below a longer "0…" key.
-    return right.length > 1 ? "0" : "";
+    if (right.length > 1 && right[0] === "0") return "0";
+    const code = right.charCodeAt(0);
+    return String.fromCharCode(Math.max(1, code - 1)) + "m";
   }
   let i = 0;
   while (i < left.length && i < right.length && left[i] === right[i]) i++;
@@ -37,7 +38,10 @@ export function rankBetween(left, right) {
   }
   const li = DIGITS.indexOf(left[i]);
   const ri = DIGITS.indexOf(right[i]);
-  if (ri - li > 1) return left.slice(0, i) + DIGITS[(li + ri) >> 1];
+  if (li !== -1 && ri !== -1 && ri - li > 1) return left.slice(0, i) + DIGITS[(li + ri) >> 1];
+  const lc = left.charCodeAt(i);
+  const rc = right.charCodeAt(i);
+  if (rc - lc > 1) return left.slice(0, i) + String.fromCharCode((lc + rc) >> 1);
   // Adjacent digits: extending the left key keeps it below the right key.
   return left + "m";
 }
@@ -71,6 +75,14 @@ export class SequenceText {
     (this.handlers[event] ||= []).push(cb);
     return this;
   }
+  off(event, cb) {
+    if (!cb) {
+      delete this.handlers[event];
+      return this;
+    }
+    this.handlers[event] = (this.handlers[event] || []).filter((fn) => fn !== cb);
+    return this;
+  }
   _emit(event, payload) {
     (this.handlers[event] || []).forEach((cb) => cb(payload));
   }
@@ -82,11 +94,24 @@ export class SequenceText {
   _hydrate() {
     const snap = this.sw.doc.snapshot();
     const next = new SequenceDoc();
+    let maxSeq = this._seq;
+    const prefix = `${this.clientId}:`;
     for (const [key, reg] of Object.entries(snap)) {
-      if (!this._isOurs(key) || reg.deleted || !reg.v || typeof reg.v !== "object") continue;
+      if (!this._isOurs(key)) continue;
+      const keyId = key.slice(this.prefix.length);
+      if (keyId.startsWith(prefix)) {
+        const n = parseInt(keyId.slice(prefix.length), 10);
+        if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
+      }
+      if (reg.deleted || !reg.v || typeof reg.v !== "object") continue;
       const v = reg.v;
+      const id = v.id || keyId;
+      if (typeof id === "string" && id.startsWith(prefix)) {
+        const n = parseInt(id.slice(prefix.length), 10);
+        if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
+      }
       next.apply({
-        id: v.id || key.slice(this.prefix.length),
+        id,
         after: v.after || "",
         rank: v.rank,
         text: v.text || "",
@@ -95,6 +120,7 @@ export class SequenceText {
       });
     }
     this.doc = next;
+    this._seq = maxSeq;
   }
 
   _pull() {

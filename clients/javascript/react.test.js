@@ -85,7 +85,7 @@ test("SyncwellProvider renders children and provides context in SSR", () => {
 
   function Consumer() {
     const sw = useSyncwell();
-    const title = useStorage("title", "Fallback");
+    const [title, setTitle] = useStorage("title", "Fallback");
     const others = useOthers();
     const self = useSelf();
     const history = useHistory();
@@ -200,4 +200,30 @@ test("LiveCursors and LiveAvatars render safely in SSR", () => {
 
   assert.ok(html.includes("syncwell-live-avatars"));
   assert.ok(html.includes("syncwell-live-cursors"));
+});
+
+test("useStorage returns [value, setValue] and mutates state on client", () => {
+  const client = fakeClient();
+  let capturedValue;
+  let capturedSetter;
+
+  function TestComponent() {
+    const [val, setVal] = useStorage("count", 0);
+    capturedValue = val;
+    capturedSetter = setVal;
+    return React.createElement("span", null, String(val));
+  }
+
+  renderToString(
+    React.createElement(
+      SyncwellProvider,
+      { client },
+      React.createElement(TestComponent)
+    )
+  );
+
+  assert.equal(capturedValue, 0);
+  assert.equal(typeof capturedSetter, "function");
+  capturedSetter(42);
+  assert.equal(client.get("count"), 42);
 });

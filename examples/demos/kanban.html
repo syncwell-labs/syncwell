@@ -257,6 +257,22 @@
     </script>
   </head>
   <body>
+    <!-- Top Navigation Bar -->
+    <nav class="demo-topbar" aria-label="Main demo navigation">
+      <div class="demo-topbar-inner">
+        <a href="/" class="demo-topbar-brand">
+          <span class="wordmark">Syncwell</span>
+          <span class="tagline">/ real-time CRDT engine</span>
+        </a>
+        <div class="demo-topbar-nav">
+          <a href="/" data-page="home">Live Demo</a>
+          <a href="/playground.html" data-page="playground">Playground</a>
+          <a href="/kanban.html" data-page="kanban" class="active">Kanban</a>
+          <a href="/sequence.html" data-page="sequence">Document</a>
+        </div>
+      </div>
+    </nav>
+
     <main>
       <p class="kicker">Syncwell demo</p>
       <header class="demo-header">
@@ -271,9 +287,11 @@
       <p class="hint">
         Drag cards between columns — or focus a card and use ← / → to move it,
         Delete to remove it. Open the Share link in another window to collaborate.
+        <span id="sample-cards-wrap" hidden> • <button id="load-samples-btn" class="btn" type="button" style="padding: 2px 8px; font-size: 12px; margin-left: 4px;">Load sample cards</button></span>
       </p>
       <nav class="demo-nav" aria-label="Demo navigation">
         <a href="/">Home →</a>
+        <a href="/playground.html">Convergence Playground →</a>
         <a href="/sequence.html">Shared document →</a>
       </nav>
     </main>
@@ -355,6 +373,10 @@
         }
 
         const all = cards();
+        const sampleWrap = document.getElementById("sample-cards-wrap");
+        if (sampleWrap) {
+          sampleWrap.hidden = isTest || all.length > 0;
+        }
         boardEl.innerHTML = "";
         for (const col of COLUMNS) {
           const colEl = document.createElement("div");
@@ -494,11 +516,38 @@
         }
       }
 
+      function seedSampleCards() {
+        const samples = [
+          { text: "Review state-vector delta spec", col: "todo" },
+          { text: "Benchmark monotonic sequence CRDT", col: "doing" },
+          { text: "Deploy edge replication cluster", col: "done" },
+        ];
+        for (const s of samples) {
+          const id = Math.random().toString(36).slice(2, 10);
+          sw.set(PREFIX + id, { id, text: s.text, col: s.col, ord: nextOrd() });
+        }
+      }
+
+      let hasCheckedSeed = false;
+      function maybeSeed() {
+        if (isTest || hasCheckedSeed) return;
+        hasCheckedSeed = true;
+        if (cards().length === 0) {
+          seedSampleCards();
+        }
+      }
+
+      const loadSamplesBtn = document.getElementById("load-samples-btn");
+      if (loadSamplesBtn) {
+        loadSamplesBtn.onclick = () => seedSampleCards();
+      }
+
       // --- wiring ------------------------------------------------------------
       sw.on("open", () => {
         st.live();
         sw.presence({ hue: myHue });
         renderPeers();
+        maybeSeed();
       });
       sw.on("close", () => st.offline());
       sw.on("change", render);

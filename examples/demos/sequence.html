@@ -162,6 +162,22 @@
     </style>
   </head>
   <body>
+    <!-- Top Navigation Bar -->
+    <nav class="demo-topbar" aria-label="Main demo navigation">
+      <div class="demo-topbar-inner">
+        <a href="/" class="demo-topbar-brand">
+          <span class="wordmark">Syncwell</span>
+          <span class="tagline">/ real-time CRDT engine</span>
+        </a>
+        <div class="demo-topbar-nav">
+          <a href="/" data-page="home">Live Demo</a>
+          <a href="/playground.html" data-page="playground">Playground</a>
+          <a href="/kanban.html" data-page="kanban">Kanban</a>
+          <a href="/sequence.html" data-page="sequence" class="active">Document</a>
+        </div>
+      </div>
+    </nav>
+
     <main>
       <section class="shell" aria-labelledby="app-title">
         <p class="kicker">Syncwell demo</p>
@@ -195,6 +211,7 @@
 
         <nav class="demo-nav" aria-label="Demo navigation">
           <a href="/">Home →</a>
+          <a href="/playground.html">Convergence Playground →</a>
           <a href="/kanban.html">Kanban board →</a>
         </nav>
       </section>

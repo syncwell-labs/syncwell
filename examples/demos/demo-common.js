@@ -54,7 +54,7 @@
     const params = new URLSearchParams(location.search);
     const roomId = params.get("room");
     if (!roomId) return;
-    for (const a of document.querySelectorAll(".demo-nav a[href]")) {
+    for (const a of document.querySelectorAll(".demo-nav a[href], .demo-topbar-nav a[href]")) {
       try {
         const url = new URL(a.getAttribute("href"), location.origin);
         url.searchParams.set("room", roomId);

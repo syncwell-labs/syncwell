@@ -130,3 +130,67 @@ test("block text optimization groups continuous typing runs into chunks", () => 
   assert.equal(text.text(), longParagraph + " [appended chunk]");
   assert.equal(sw.doc.entries.size, 2);
 });
+
+test("rankBetween satisfies left < rank < right when right starts with 0", () => {
+  const cases = [
+    ["", "0"],
+    ["", "00"],
+    ["", "01"],
+    ["", "0m"],
+    ["a", "a0"],
+    ["a", "a00"],
+  ];
+  for (const [left, right] of cases) {
+    const got = rankBetween(left, right);
+    assert.ok(got > left, `Expected ${JSON.stringify(got)} > ${JSON.stringify(left)}`);
+    assert.ok(got < right, `Expected ${JSON.stringify(got)} < ${JSON.stringify(right)}`);
+    assert.notEqual(got, left);
+    assert.notEqual(got, right);
+  }
+});
+
+test("SequenceText off removes registered change listener", () => {
+  const { text } = newText("A");
+  let countA = 0;
+  let countB = 0;
+  const cbA = () => { countA++; };
+  const cbB = () => { countB++; };
+  text.on("change", cbA);
+  text.on("change", cbB);
+
+  text.insertAt(0, "x");
+  assert.equal(countA, 1);
+  assert.equal(countB, 1);
+
+  text.off("change", cbA);
+  text.insertAt(1, "y");
+  assert.equal(countA, 1);
+  assert.equal(countB, 2);
+
+  text.off("change");
+  text.insertAt(2, "z");
+  assert.equal(countA, 1);
+  assert.equal(countB, 2);
+});
+
+test("SequenceText hydrates existing seq numbers to prevent ID collisions on reload", () => {
+  const sw = new Syncwell("ws://localhost/ws", "text-room", {
+    clientId: "client-1",
+    WebSocket: FakeWebSocket,
+  });
+  const text1 = new SequenceText(sw, { prefix: "body:", clientId: "client-1" });
+  text1.insertAt(0, "ABC");
+  assert.equal(text1.text(), "ABC");
+  assert.equal(text1._seq, 3);
+
+  // Simulate reload with same persisted state and same clientId
+  const text2 = new SequenceText(sw, { prefix: "body:", clientId: "client-1" });
+  assert.equal(text2.text(), "ABC");
+  assert.equal(text2._seq, 3);
+
+  // Next insert uses _seq >= 4 and does not overwrite existing characters
+  const insertedIds = text2.insertAt(3, "D");
+  assert.deepEqual(insertedIds, ["client-1:4"]);
+  assert.equal(text2.text(), "ABCD");
+  assert.equal(text2.doc.visibleIds().length, 4);
+});

@@ -27,7 +27,7 @@ Requirements: Go 1.26+, Node 18+, Python 3.10+ for the Python client.
 | `tests/` | `e2e/`, `a11y/`, `bench/`, `conformance/` harnesses |
 | `clients/python/` | Dependency-free Python client and E2E |
 | `website/` | VitePress documentation site |
-| `docs/` | `architecture/`, `protocol/`, `operations/`, `product/`, `standards/`, `audits/` |
+| `docs/` | `architecture/`, `protocol/`, `operations/`, `product/`, `standards/`, `adr/` |
 
 ## Ground rules
 

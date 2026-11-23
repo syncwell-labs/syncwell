@@ -16,7 +16,7 @@ export declare function useSyncwell(): Syncwell;
 
 export declare function useAwareness(): Awareness;
 
-export declare function useStorage<T = any>(key: string, fallback?: T): T;
+export declare function useStorage<T = any>(key: string, fallback?: T): [T, (nextValue: T) => void];
 
 export declare function usePresence<T extends Record<string, any> = Record<string, any>>(
   initialState?: T

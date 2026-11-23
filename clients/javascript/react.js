@@ -89,7 +89,14 @@ export function useStorage(key, fallback = null) {
     return () => client.off("change", update);
   }, [client, key, fallback]);
 
-  return value;
+  const setStorageValue = React.useCallback(
+    (nextValue) => {
+      client.set(key, nextValue);
+    },
+    [client, key]
+  );
+
+  return [value, setStorageValue];
 }
 
 export function usePresence(initialState) {

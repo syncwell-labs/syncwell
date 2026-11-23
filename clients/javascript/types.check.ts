@@ -128,13 +128,8 @@ void useArray;
 void LiveCursors;
 void LiveAvatars;
 
-import { bindMonaco } from "./monaco.js";
-import { bindProseMirror, syncwellCollaboration } from "./tiptap.js";
 import { mountDevTools } from "./devtools.js";
 
-void bindMonaco;
-void bindProseMirror;
-void syncwellCollaboration;
 void mountDevTools;
 
 

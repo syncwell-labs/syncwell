@@ -78,6 +78,17 @@ test("presence published before the first snapshot is sent once ready", () => {
   sw.close();
 });
 
+test("no presence frame is sent on connect when presence() was never called", () => {
+  const sw = new Syncwell("ws://localhost/ws", "room", { WebSocket: FakeWebSocket, clientId: "A" });
+  sw.connect();
+  assert.equal(FakeWebSocket.last.sent.length, 0);
+  sw._recv({ type: "snapshot", state: {}, epoch: 1 });
+  const frames = FakeWebSocket.last.sent.map((raw) => JSON.parse(raw));
+  const presence = frames.find((frame) => frame.type === "presence");
+  assert.equal(presence, undefined);
+  sw.close();
+});
+
 test("undo does not clobber a newer remote write", () => {
   const sw = new Syncwell("ws://localhost/ws", "room", { WebSocket: FakeWebSocket, clientId: "A" });
   sw.set("k", "local");
@@ -174,3 +185,24 @@ test("remote overwrite prunes a stale dirty key before reconnect", () => {
   assert.equal(sw._dirty.has("j"), true);
   sw.close();
 });
+
+test("server echo of own op clears the dirty key", () => {
+  const sw = new Syncwell("ws://localhost/ws", "room", { WebSocket: FakeWebSocket, clientId: "A" });
+  sw.connect();
+  sw._recv({ type: "snapshot", state: {}, epoch: 1 });
+  sw.set("title", "Hello");
+  assert.equal(sw._dirty.has("title"), true);
+  assert.equal(sw._dirty.size, 1);
+
+  const reg = sw.doc.entries.get("title");
+  sw._recv({
+    type: "op",
+    epoch: 1,
+    key: "title",
+    register: reg,
+  });
+  assert.equal(sw._dirty.has("title"), false);
+  assert.equal(sw._dirty.size, 0);
+  sw.close();
+});
+

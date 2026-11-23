@@ -54,16 +54,6 @@
       "import": "./dist/esm/react.js",
       "require": "./dist/cjs/react.cjs"
     },
-    "./monaco": {
-      "types": "./monaco.d.ts",
-      "import": "./dist/esm/monaco.js",
-      "require": "./dist/cjs/monaco.cjs"
-    },
-    "./tiptap": {
-      "types": "./tiptap.d.ts",
-      "import": "./dist/esm/tiptap.js",
-      "require": "./dist/cjs/tiptap.cjs"
-    },
     "./devtools": {
       "types": "./devtools.d.ts",
       "import": "./dist/esm/devtools.js",
@@ -81,8 +71,6 @@
     "storage.js",
     "storage-node.js",
     "react.js",
-    "monaco.js",
-    "tiptap.js",
     "devtools.js",
     "*.d.ts",
     "dist/",

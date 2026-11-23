@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Syncwell — Convergence Playground</title>
+    <link rel="stylesheet" href="/demo-common.css" />
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 15px/1.55 var(--font-sans);
+        color: var(--text);
+        background: var(--bg);
+      }
+      ::selection { background: var(--accent-soft); }
+      :root { accent-color: var(--accent); }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      .page-header {
+        border-bottom: 1px solid var(--border);
+        padding: 24px 0 20px;
+        background: var(--panel);
+      }
+      .page-header-inner {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 24px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+      .page-header h1 {
+        font-family: var(--font-serif);
+        font-weight: 600;
+        font-size: clamp(26px, 3vw, 34px);
+        margin: 0 0 6px;
+        line-height: 1.1;
+        letter-spacing: -0.012em;
+      }
+      .kicker {
+        margin: 0 0 6px;
+        font: 600 11px/1 var(--font-sans);
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .sub {
+        margin: 0;
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 15px;
+        color: var(--muted);
+        max-width: 75ch;
+      }
+
+      .convergence-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid var(--border);
+        transition: all 0.2s ease;
+      }
+      .convergence-badge.synced {
+        background: var(--ok-soft);
+        color: var(--ok);
+        border-color: var(--ok);
+      }
+      .convergence-badge.diverged {
+        background: var(--warn-soft);
+        color: var(--warn);
+        border-color: var(--warn);
+      }
+
+      .scenario-bar {
+        max-width: 1200px;
+        margin: 20px auto 0;
+        padding: 14px 18px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 6px 6px 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 14px;
+      }
+      .scenario-info {
+        font-size: 13.5px;
+        color: var(--muted);
+        max-width: 72ch;
+        line-height: 1.45;
+      }
+      .scenario-info strong {
+        color: var(--text);
+        font-family: var(--font-serif);
+      }
+
+      main {
+        max-width: 1200px;
+        margin: 24px auto 40px;
+        padding: 0 24px;
+      }
+
+      .columns {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+      @media (max-width: 840px) {
+        .columns { grid-template-columns: 1fr; }
+        main { padding: 0 16px; }
+        .page-header-inner { padding: 0 16px; }
+      }
+
+      .client-card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s;
+      }
+      .client-card.is-offline {
+        border-color: var(--warn);
+        box-shadow: 0 0 0 1px var(--warn-soft);
+      }
+      .client-card.is-offline .client-header {
+        background: var(--warn-soft);
+        border-bottom-color: rgba(138, 90, 16, 0.25);
+      }
+
+      .client-header {
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--panel-muted);
+        transition: background-color 0.2s;
+      }
+      .client-meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .client-avatar {
+        width: 28px;
+        height: 28px;
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+        font-family: var(--font-mono);
+        font-weight: 700;
+        font-size: 13px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+      }
+      .avatar-a { border-left: 3px solid var(--accent); }
+      .avatar-b { border-left: 3px solid var(--muted); }
+
+      .client-title {
+        font-weight: 600;
+        font-size: 14.5px;
+        font-family: var(--font-serif);
+      }
+      .client-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-family: var(--font-mono);
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 3px;
+        border: 1px solid var(--border);
+      }
+      .client-status-pill.online {
+        background: var(--ok-soft);
+        color: var(--ok);
+        border-color: var(--ok);
+      }
+      .client-status-pill.offline {
+        background: var(--warn-soft);
+        color: var(--warn);
+        border-color: var(--warn);
+      }
+
+      .client-metrics {
+        display: flex;
+        gap: 16px;
+        padding: 8px 18px;
+        background: var(--panel-muted);
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        font-family: var(--font-mono);
+      }
+      .metric {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .metric-label { color: var(--muted); }
+      .metric-value { font-weight: 600; color: var(--text); }
+
+      .client-body {
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        flex: 1;
+      }
+
+      .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .form-label {
+        font-family: var(--font-serif);
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .input-text, .textarea, .select {
+        width: 100%;
+        padding: 8px 12px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .input-text:focus, .textarea:focus, .select:focus {
+        border-color: var(--accent);
+      }
+      .textarea {
+        min-height: 100px;
+        resize: vertical;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .tasks-container {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .task-item {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 10px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .task-item:hover {
+        border-color: var(--accent);
+      }
+      .task-item input[type="checkbox"] {
+        cursor: pointer;
+        accent-color: var(--accent);
+      }
+      .task-item.completed span {
+        text-decoration: line-through;
+        color: var(--muted);
+      }
+
+      .debug-panel {
+        margin-top: auto;
+        padding-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Top Navigation Bar -->
+    <nav class="demo-topbar" aria-label="Main demo navigation">
+      <div class="demo-topbar-inner">
+        <a href="/" class="demo-topbar-brand">
+          <span class="wordmark">Syncwell</span>
+          <span class="tagline">/ real-time CRDT engine</span>
+        </a>
+        <div class="demo-topbar-nav">
+          <a href="/" data-page="home">Live Demo</a>
+          <a href="/playground.html" data-page="playground" class="active">Playground</a>
+          <a href="/kanban.html" data-page="kanban">Kanban</a>
+          <a href="/sequence.html" data-page="sequence">Document</a>
+        </div>
+      </div>
+    </nav>
+
+    <header class="page-header">
+      <div class="page-header-inner">
+        <div>
+          <p class="kicker">Convergence playground</p>
+          <h1>Syncwell Convergence Playground</h1>
+          <p class="sub">Side-by-side replica simulation demonstrating offline edits, causal order, and deterministic CRDT delta reconciliation.</p>
+        </div>
+        <div id="convergenceBadge" class="convergence-badge synced">
+          <span>●</span> <span id="convergenceText">Replicas Converged</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="scenario-bar">
+      <div class="scenario-info">
+        <strong>Try the offline convergence drill:</strong> Take Client A offline, edit fields concurrently on both sides, then reconnect Client A. Notice both sides reconcile deterministically without lost updates.
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button id="btnAutoScenario" class="btn primary" type="button">Run Convergence Drill</button>
+        <button id="btnResetRoom" class="btn ghost" type="button">Reset Room</button>
+      </div>
+    </div>
+
+    <main>
+      <div class="columns">
+        <!-- Client A -->
+        <div class="client-card" id="cardA">
+          <div class="client-header">
+            <div class="client-meta">
+              <div class="client-avatar avatar-a">A</div>
+              <div>
+                <div class="client-title">Client A (Alice)</div>
+                <div id="statusBadgeA" class="client-status-pill online">● Online</div>
+              </div>
+            </div>
+            <button id="btnToggleA" class="btn ghost" type="button">Go Offline</button>
+          </div>
+          <div class="client-metrics">
+            <div class="metric">
+              <span class="metric-label">Clock:</span>
+              <span id="clockA" class="metric-value">C=0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Epoch:</span>
+              <span id="epochA" class="metric-value">1</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Dirty ops:</span>
+              <span id="dirtyA" class="metric-value">0</span>
+            </div>
+          </div>
+          <div class="client-body">
+            <div class="form-group">
+              <label class="form-label" for="titleA">Shared Title (LWW Map)</label>
+              <input id="titleA" class="input-text" type="text" placeholder="Project name…" value="Q4 Launch Spec" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="statusA">Project Status</label>
+              <select id="statusA" class="select">
+                <option value="planning">Planning</option>
+                <option value="in_progress" selected>In Progress</option>
+                <option value="review">Review</option>
+                <option value="done">Completed</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="notesA">Collaborative Notes (CRDT Sequence Text)</label>
+              <textarea id="notesA" class="textarea" placeholder="Type collaborative notes here…">Syncwell converges across network partitions using state-vector deltas.
+Take Client A offline and edit concurrently to verify reconciliation.</textarea>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Shared Checklist Items</label>
+              <div class="tasks-container">
+                <label class="task-item completed" id="taskRowA1">
+                  <input type="checkbox" id="taskCheckA1" checked />
+                  <span id="taskTextA1">Define causal CRDT boundary</span>
+                </label>
+                <label class="task-item completed" id="taskRowA2">
+                  <input type="checkbox" id="taskCheckA2" checked />
+                  <span id="taskTextA2">Run delta sync recovery drill</span>
+                </label>
+                <label class="task-item" id="taskRowA3">
+                  <input type="checkbox" id="taskCheckA3" />
+                  <span id="taskTextA3">Verify byte-for-byte convergence</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="debug-panel">
+              <details class="crdt-disclosure">
+                <summary>View Client A CRDT Snapshot</summary>
+                <pre id="debugA" class="crdt-content"></pre>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <!-- Client B -->
+        <div class="client-card" id="cardB">
+          <div class="client-header">
+            <div class="client-meta">
+              <div class="client-avatar avatar-b">B</div>
+              <div>
+                <div class="client-title">Client B (Bob)</div>
+                <div id="statusBadgeB" class="client-status-pill online">● Online</div>
+              </div>
+            </div>
+            <button id="btnToggleB" class="btn ghost" type="button">Go Offline</button>
+          </div>
+          <div class="client-metrics">
+            <div class="metric">
+              <span class="metric-label">Clock:</span>
+              <span id="clockB" class="metric-value">C=0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Epoch:</span>
+              <span id="epochB" class="metric-value">1</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Dirty ops:</span>
+              <span id="dirtyB" class="metric-value">0</span>
+            </div>
+          </div>
+          <div class="client-body">
+            <div class="form-group">
+              <label class="form-label" for="titleB">Shared Title (LWW Map)</label>
+              <input id="titleB" class="input-text" type="text" placeholder="Project name…" value="Q4 Launch Spec" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="statusB">Project Status</label>
+              <select id="statusB" class="select">
+                <option value="planning">Planning</option>
+                <option value="in_progress" selected>In Progress</option>
+                <option value="review">Review</option>
+                <option value="done">Completed</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="notesB">Collaborative Notes (CRDT Sequence Text)</label>
+              <textarea id="notesB" class="textarea" placeholder="Type collaborative notes here…">Syncwell converges across network partitions using state-vector deltas.
+Take Client A offline and edit concurrently to verify reconciliation.</textarea>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Shared Checklist Items</label>
+              <div class="tasks-container">
+                <label class="task-item completed" id="taskRowB1">
+                  <input type="checkbox" id="taskCheckB1" checked />
+                  <span id="taskTextB1">Define causal CRDT boundary</span>
+                </label>
+                <label class="task-item completed" id="taskRowB2">
+                  <input type="checkbox" id="taskCheckB2" checked />
+                  <span id="taskTextB2">Run delta sync recovery drill</span>
+                </label>
+                <label class="task-item" id="taskRowB3">
+                  <input type="checkbox" id="taskCheckB3" />
+                  <span id="taskTextB3">Verify byte-for-byte convergence</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="debug-panel">
+              <details class="crdt-disclosure">
+                <summary>View Client B CRDT Snapshot</summary>
+                <pre id="debugB" class="crdt-content"></pre>
+              </details>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="demo-nav" aria-label="Demo navigation">
+        <a href="/">Live Demo →</a>
+        <a href="/kanban.html">Kanban board →</a>
+        <a href="/sequence.html">Shared document →</a>
+      </nav>
+    </main>
+
+    <script src="/demo-common.js"></script>
+    <script type="module">
+      import { Syncwell } from "/sdk/syncwell.js";
+      import { SequenceText } from "/sdk/text.js";
+
+      // Choose a unique room per playground session so users get an isolated sandbox
+      const urlParams = new URLSearchParams(location.search);
+      let room = urlParams.get("room");
+      if (!room) {
+        room = "playground-" + Math.floor(Math.random() * 1e8).toString(36);
+        const nextUrl = new URL(location.href);
+        nextUrl.searchParams.set("room", room);
+        history.replaceState(null, "", nextUrl.toString());
+      }
+      SyncwellDemo.nav();
+
+      const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const serverUrl = `${wsProtocol}//${location.host}/ws`;
+
+      // Memory storage to keep client A and B independent within the same tab
+      class LocalMemoryStorage {
+        constructor() { this.items = new Map(); }
+        getItem(k) { return this.items.get(k) ?? null; }
+        setItem(k, v) { this.items.set(k, String(v)); }
+        removeItem(k) { this.items.delete(k); }
+        clear() { this.items.clear(); }
+      }
+
+      const clientA = new Syncwell(serverUrl, room, {
+        clientId: "client-a",
+        storage: new LocalMemoryStorage(),
+        delta: true,
+      });
+
+      const clientB = new Syncwell(serverUrl, room, {
+        clientId: "client-b",
+        storage: new LocalMemoryStorage(),
+        delta: true,
+      });
+
+      const textA = new SequenceText(clientA, { prefix: "text:" });
+      const textB = new SequenceText(clientB, { prefix: "text:" });
+
+      window.clientA = clientA;
+      window.clientB = clientB;
+      window.textA = textA;
+      window.textB = textB;
+
+      let isConnectedA = false;
+      let isConnectedB = false;
+
+      // DOM elements
+      const badgeConvergence = document.getElementById("convergenceBadge");
+      const textConvergence = document.getElementById("convergenceText");
+
+      // Client A elements
+      const cardA = document.getElementById("cardA");
+      const statusBadgeA = document.getElementById("statusBadgeA");
+      const btnToggleA = document.getElementById("btnToggleA");
+      const clockA = document.getElementById("clockA");
+      const epochA = document.getElementById("epochA");
+      const dirtyA = document.getElementById("dirtyA");
+      const titleA = document.getElementById("titleA");
+      const statusA = document.getElementById("statusA");
+      const notesA = document.getElementById("notesA");
+      const debugA = document.getElementById("debugA");
+
+      // Client B elements
+      const cardB = document.getElementById("cardB");
+      const statusBadgeB = document.getElementById("statusBadgeB");
+      const btnToggleB = document.getElementById("btnToggleB");
+      const clockB = document.getElementById("clockB");
+      const epochB = document.getElementById("epochB");
+      const dirtyB = document.getElementById("dirtyB");
+      const titleB = document.getElementById("titleB");
+      const statusB = document.getElementById("statusB");
+      const notesB = document.getElementById("notesB");
+      const debugB = document.getElementById("debugB");
+
+      const taskCheckA = [
+        document.getElementById("taskCheckA1"),
+        document.getElementById("taskCheckA2"),
+        document.getElementById("taskCheckA3"),
+      ];
+      const taskCheckB = [
+        document.getElementById("taskCheckB1"),
+        document.getElementById("taskCheckB2"),
+        document.getElementById("taskCheckB3"),
+      ];
+
+      function updateStatusUI() {
+        // Status Client A
+        if (isConnectedA) {
+          cardA.classList.remove("is-offline");
+          statusBadgeA.textContent = "● Online";
+          statusBadgeA.className = "client-status-pill online";
+          btnToggleA.textContent = "Go Offline";
+          btnToggleA.className = "btn ghost";
+        } else {
+          cardA.classList.add("is-offline");
+          statusBadgeA.textContent = "○ Offline — queuing local ops";
+          statusBadgeA.className = "client-status-pill offline";
+          btnToggleA.textContent = "Reconnect & Sync";
+          btnToggleA.className = "btn primary";
+        }
+
+        // Status Client B
+        if (isConnectedB) {
+          cardB.classList.remove("is-offline");
+          statusBadgeB.textContent = "● Online";
+          statusBadgeB.className = "client-status-pill online";
+          btnToggleB.textContent = "Go Offline";
+          btnToggleB.className = "btn ghost";
+        } else {
+          cardB.classList.add("is-offline");
+          statusBadgeB.textContent = "○ Offline — queuing local ops";
+          statusBadgeB.className = "client-status-pill offline";
+          btnToggleB.textContent = "Reconnect & Sync";
+          btnToggleB.className = "btn primary";
+        }
+
+        // Metrics
+        clockA.textContent = `C=${clientA.clock.counter}`;
+        epochA.textContent = clientA.epoch;
+        dirtyA.textContent = clientA._dirty ? clientA._dirty.size : 0;
+
+        clockB.textContent = `C=${clientB.clock.counter}`;
+        epochB.textContent = clientB.epoch;
+        dirtyB.textContent = clientB._dirty ? clientB._dirty.size : 0;
+
+        // Check Convergence
+        const liveA = clientA.live();
+        const liveB = clientB.live();
+        const keysA = Object.keys(liveA).sort();
+        const keysB = Object.keys(liveB).sort();
+        const sameKeys = keysA.length === keysB.length && keysA.every((k, i) => k === keysB[i]);
+        const sameValues = sameKeys && keysA.every((k) => JSON.stringify(liveA[k]) === JSON.stringify(liveB[k]));
+        const txtA = textA.text();
+        const txtB = textB.text();
+        const dirtyCountA = clientA._dirty ? clientA._dirty.size : 0;
+        const dirtyCountB = clientB._dirty ? clientB._dirty.size : 0;
+
+        const isConverged = sameValues && txtA === txtB && dirtyCountA === 0 && dirtyCountB === 0;
+        if (isConverged) {
+          badgeConvergence.className = "convergence-badge synced";
+          badgeConvergence.innerHTML = '<span>●</span> <span id="convergenceText">Replicas Converged</span>';
+        } else {
+          badgeConvergence.className = "convergence-badge diverged";
+          badgeConvergence.innerHTML = '<span>▲</span> <span id="convergenceText">Diverged (Sync Pending)</span>';
+        }
+
+        debugA.textContent = JSON.stringify(clientA.doc.snapshot(), null, 2);
+        debugB.textContent = JSON.stringify(clientB.doc.snapshot(), null, 2);
+      }
+
+      function syncInputsFromCRDT(client, titleEl, statusEl, taskChecks, textCRDT, notesEl) {
+        if (document.activeElement !== titleEl) {
+          titleEl.value = client.get("title") ?? "";
+        }
+        if (document.activeElement !== statusEl) {
+          statusEl.value = client.get("status") ?? "planning";
+        }
+        for (let i = 0; i < taskChecks.length; i++) {
+          const val = client.get(`task:${i}`);
+          taskChecks[i].checked = Boolean(val);
+          taskChecks[i].parentElement.classList.toggle("completed", Boolean(val));
+        }
+        if (document.activeElement !== notesEl) {
+          notesEl.value = textCRDT.text();
+        }
+      }
+
+      function onAChange() {
+        syncInputsFromCRDT(clientA, titleA, statusA, taskCheckA, textA, notesA);
+        updateStatusUI();
+      }
+
+      function onBChange() {
+        syncInputsFromCRDT(clientB, titleB, statusB, taskCheckB, textB, notesB);
+        updateStatusUI();
+      }
+
+      function seedInitialStateIfEmpty() {
+        if (!clientA.get("title") && textA.length === 0) {
+          clientA.set("title", "Q4 Launch Spec");
+          clientA.set("status", "in_progress");
+          clientA.set("task:0", true);
+          clientA.set("task:1", true);
+          clientA.set("task:2", false);
+          textA.replaceRange(
+            0,
+            0,
+            "Syncwell converges across network partitions using state-vector deltas.\nTake Client A offline and edit concurrently to verify reconciliation."
+          );
+          onAChange();
+        }
+      }
+
+      // Client A events
+      clientA.on("open", () => {
+        isConnectedA = true;
+        seedInitialStateIfEmpty();
+        updateStatusUI();
+      });
+      clientA.on("close", () => { isConnectedA = false; updateStatusUI(); });
+      clientA.on("change", onAChange);
+      textA.on("change", onAChange);
+
+      // Client B events
+      clientB.on("open", () => { isConnectedB = true; updateStatusUI(); });
+      clientB.on("close", () => { isConnectedB = false; updateStatusUI(); });
+      clientB.on("change", onBChange);
+      textB.on("change", onBChange);
+
+      // Input handlers Client A
+      titleA.addEventListener("input", (e) => { clientA.set("title", e.target.value); updateStatusUI(); });
+      statusA.addEventListener("change", (e) => { clientA.set("status", e.target.value); updateStatusUI(); });
+      taskCheckA.forEach((chk, idx) => {
+        chk.addEventListener("change", (e) => {
+          clientA.set(`task:${idx}`, e.target.checked);
+          chk.parentElement.classList.toggle("completed", e.target.checked);
+          updateStatusUI();
+        });
+      });
+      notesA.addEventListener("input", (e) => {
+        textA.replaceRange(0, textA.length, e.target.value);
+        updateStatusUI();
+      });
+
+      // Input handlers Client B
+      titleB.addEventListener("input", (e) => { clientB.set("title", e.target.value); updateStatusUI(); });
+      statusB.addEventListener("change", (e) => { clientB.set("status", e.target.value); updateStatusUI(); });
+      taskCheckB.forEach((chk, idx) => {
+        chk.addEventListener("change", (e) => {
+          clientB.set(`task:${idx}`, e.target.checked);
+          chk.parentElement.classList.toggle("completed", e.target.checked);
+          updateStatusUI();
+        });
+      });
+      notesB.addEventListener("input", (e) => {
+        textB.replaceRange(0, textB.length, e.target.value);
+        updateStatusUI();
+      });
+
+      // Toggle connect/disconnect buttons
+      btnToggleA.addEventListener("click", () => {
+        if (isConnectedA) {
+          clientA.close();
+        } else {
+          clientA.connect();
+        }
+      });
+
+      btnToggleB.addEventListener("click", () => {
+        if (isConnectedB) {
+          clientB.close();
+        } else {
+          clientB.connect();
+        }
+      });
+
+      // Initialize defaults
+      seedInitialStateIfEmpty();
+
+      // Connect both initially
+      clientA.connect();
+      clientB.connect();
+
+      // Convergence Drill Runner
+      const btnAuto = document.getElementById("btnAutoScenario");
+      btnAuto.addEventListener("click", async () => {
+        btnAuto.disabled = true;
+        btnAuto.textContent = "Running drill…";
+
+        // Step 1: Disconnect Client A
+        clientA.close();
+        await new Promise((r) => setTimeout(r, 450));
+
+        // Step 2: Edit Client A while offline
+        clientA.set("title", "Q4 Launch Spec (Offline Draft)");
+        clientA.set("task:2", true);
+        textA.replaceRange(
+          0,
+          textA.length,
+          "Syncwell converges across network partitions using state-vector deltas.\n\n[Client A offline edit: Added security verification notes]"
+        );
+        onAChange();
+        await new Promise((r) => setTimeout(r, 700));
+
+        // Step 3: Concurrently edit Client B while online
+        clientB.set("status", "review");
+        textB.replaceRange(
+          0,
+          textB.length,
+          "Syncwell converges across network partitions using state-vector deltas.\n\n[Client B online edit: Added performance benchmark metrics]"
+        );
+        onBChange();
+        await new Promise((r) => setTimeout(r, 900));
+
+        // Step 4: Reconnect Client A
+        clientA.connect();
+        await new Promise((r) => setTimeout(r, 700));
+
+        btnAuto.disabled = false;
+        btnAuto.textContent = "Run Convergence Drill";
+      });
+
+      document.getElementById("btnResetRoom").addEventListener("click", () => {
+        const nextUrl = new URL(location.href);
+        nextUrl.searchParams.set("room", "playground-" + Math.floor(Math.random() * 1e8).toString(36));
+        location.href = nextUrl.toString();
+      });
+    </script>
+  </body>
+</html>

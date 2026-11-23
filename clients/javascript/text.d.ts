@@ -28,6 +28,7 @@ export class SequenceText {
   readonly clientId: string;
 
   on(event: "change", cb: (text: string) => void): this;
+  off(event: "change", cb?: (text: string) => void): this;
 
   insertAt(
     index: number,

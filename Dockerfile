@@ -22,7 +22,7 @@ LABEL org.opencontainers.image.revision="${COMMIT}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 COPY --from=build --chown=nonroot:nonroot /out/syncwell /syncwell
 COPY --chown=nonroot:nonroot examples/demos /demo
-COPY --chown=nonroot:nonroot clients/javascript/syncwell.js clients/javascript/crdt.js clients/javascript/sequence.js clients/javascript/text.js clients/javascript/awareness.js clients/javascript/storage.js /sdk/
+COPY --chown=nonroot:nonroot clients/javascript/syncwell.js clients/javascript/crdt.js clients/javascript/sequence.js clients/javascript/text.js clients/javascript/awareness.js clients/javascript/storage.js clients/javascript/array.js clients/javascript/devtools.js /sdk/
 EXPOSE 8080
 USER nonroot:nonroot
 STOPSIGNAL SIGTERM

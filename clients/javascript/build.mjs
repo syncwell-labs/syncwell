@@ -4,7 +4,7 @@
 import { build } from "esbuild";
 import { mkdir, rm } from "node:fs/promises";
 
-const entries = ["syncwell", "crdt", "sequence", "text", "array", "awareness", "storage", "react", "monaco", "tiptap", "devtools"];
+const entries = ["syncwell", "crdt", "sequence", "text", "array", "awareness", "storage", "react", "devtools"];
 const common = {
   bundle: true,
   sourcemap: true,

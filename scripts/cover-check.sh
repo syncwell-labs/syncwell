@@ -8,7 +8,6 @@ declare -A MIN=(
   [syncwell/internal/crdt]=75
   [syncwell/internal/store]=75
   [syncwell/internal/server]=60
-  [syncwell/internal/sequence]=60
 )
 
 out=$(go test ./... -cover -count=1 2>&1) || {

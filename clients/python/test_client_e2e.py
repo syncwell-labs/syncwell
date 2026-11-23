@@ -9,6 +9,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 import unittest
 import urllib.request
@@ -101,6 +102,92 @@ class PythonClientE2E(unittest.TestCase):
         self.assertTrue(b.wait_ready(5))
         self._eventually(lambda: a.get("offline") == "kept", "offline edit was not merged after reconnect")
 
+        self.assertEqual(a.live(), b.live())
+        a.close()
+        b.close()
+
+    def test_concurrent_set_and_receive(self):
+        client = Syncwell("ws://localhost:8080/ws", "concurrency-room", client_id="py-concurrent")
+        client._ready.set()
+        sent_frames = []
+        lock = threading.Lock()
+
+        class MockWS:
+            def send(self, text):
+                with lock:
+                    sent_frames.append(text)
+
+            def close(self):
+                pass
+
+        client._ws = MockWS()
+
+        errors = []
+
+        def worker_writer(thread_id, n_ops):
+            try:
+                for i in range(n_ops):
+                    client.set(f"k-{thread_id}-{i}", f"val-{i}")
+            except Exception as e:
+                errors.append(e)
+
+        def worker_receiver(n_frames):
+            try:
+                for i in range(n_frames):
+                    client._receive({
+                        "protocol": 1,
+                        "type": "op",
+                        "key": f"remote-{i}",
+                        "register": {
+                            "v": f"remote-val-{i}",
+                            "t": {"c": i + 1, "n": "remote-node"},
+                        },
+                    })
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for t_id in range(4):
+            threads.append(threading.Thread(target=worker_writer, args=(t_id, 50)))
+        for _ in range(2):
+            threads.append(threading.Thread(target=worker_receiver, args=(50,)))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        self.assertGreater(client.clock.counter, 0)
+        snapshot = client.snapshot()
+        self.assertGreaterEqual(len(snapshot), 250)
+
+    def test_concurrent_writes_live_server(self):
+        a = Syncwell(BASE, "python-concurrent-e2e", client_id="py-A")
+        b = Syncwell(BASE, "python-concurrent-e2e", client_id="py-B")
+        a.connect()
+        b.connect()
+        self.assertTrue(a.wait_ready(5))
+        self.assertTrue(b.wait_ready(5))
+
+        errors = []
+
+        def do_writes(client, prefix, count):
+            try:
+                for i in range(count):
+                    client.set(f"{prefix}-{i}", i)
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=do_writes, args=(a, "a", 30))
+        t2 = threading.Thread(target=do_writes, args=(b, "b", 30))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertEqual(errors, [])
+        self._eventually(lambda: len(a.live()) == 60 and len(b.live()) == 60, "clients did not converge on 60 items")
         self.assertEqual(a.live(), b.live())
         a.close()
         b.close()

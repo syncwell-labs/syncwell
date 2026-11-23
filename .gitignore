@@ -36,6 +36,11 @@ __pycache__/
 /clients/python/build/
 /clients/python/dist/
 
+# Office / Temporary clutter
+*.pptx
+*.swp
+*~
+
 # Local secrets and keys (never commit)
 .env
 .env.*

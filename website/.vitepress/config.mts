@@ -58,7 +58,6 @@ export default defineConfig({
             { text: "Framework recipes", link: "/guide/recipes" },
             { text: "React integration", link: "/guide/react" },
             { text: "Collaborative lists", link: "/guide/array" },
-            { text: "Editor adapters", link: "/guide/editors" },
             { text: "CRDT DevTools", link: "/guide/devtools" },
             { text: "Python client", link: "/guide/python" },
           ],

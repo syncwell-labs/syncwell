@@ -17,3 +17,6 @@ export declare function mountDevTools(
   syncwell: Syncwell<any>,
   options?: DevToolsOptions
 ): DevToolsController;
+
+export declare function escapeHtml(str: unknown): string;
+export declare function sanitizeColor(color: unknown): string;

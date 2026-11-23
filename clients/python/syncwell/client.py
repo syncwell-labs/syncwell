@@ -84,6 +84,7 @@ class _WebSocket:
             if not isinstance(value, str) or any(ord(c) in (10, 13) or (ord(c) < 32 and ord(c) != 9) for c in value):
                 raise SyncwellError("BAD_HEADER", f"invalid header value for {name!r}")
             self.headers[name] = value
+        self._send_lock = threading.Lock()
 
     def connect(self) -> None:
         raw_sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
@@ -180,21 +181,22 @@ class _WebSocket:
                     return b"".join(fragments).decode("utf-8")
 
     def _send_frame(self, opcode: int, payload: bytes) -> None:
-        if not self.sock:
-            return
-        fin = 0x80
-        mask_bit = 0x80
-        b1 = fin | opcode
-        length = len(payload)
-        mask_key = os.urandom(4)
-        if length < 126:
-            header = bytes([b1, mask_bit | length]) + mask_key
-        elif length < 65536:
-            header = bytes([b1, mask_bit | 126]) + struct.pack("!H", length) + mask_key
-        else:
-            header = bytes([b1, mask_bit | 127]) + struct.pack("!Q", length) + mask_key
-        masked_payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-        self.sock.sendall(header + masked_payload)
+        with self._send_lock:
+            if not self.sock:
+                return
+            fin = 0x80
+            mask_bit = 0x80
+            b1 = fin | opcode
+            length = len(payload)
+            mask_key = os.urandom(4)
+            if length < 126:
+                header = bytes([b1, mask_bit | length]) + mask_key
+            elif length < 65536:
+                header = bytes([b1, mask_bit | 126]) + struct.pack("!H", length) + mask_key
+            else:
+                header = bytes([b1, mask_bit | 127]) + struct.pack("!Q", length) + mask_key
+            masked_payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+            self.sock.sendall(header + masked_payload)
 
     def send(self, text: str) -> None:
         self._send_frame(0x1, text.encode("utf-8"))
@@ -244,13 +246,14 @@ class SyncwellClient:
         self._ws: Optional[_WebSocket] = None
         self._reader: Optional[threading.Thread] = None
         self._lock = threading.RLock()
+        self._send_lock = threading.Lock()
         self._ready = threading.Event()
         self._closed = False
         self._handlers: Dict[str, List[Callable]] = {}
 
         self.crdt = LWWMap()
         self.entries = self.crdt.entries
-        self.clock = 0
+        self.clock = Clock(self.client_id)
         self.epoch = 1
         self.dirty: Set[str] = set()
 
@@ -348,11 +351,14 @@ class SyncwellClient:
             self._receive(frame)
 
     def _send_raw(self, frame: Dict[str, Any]) -> None:
-        ws = self._ws
-        if ws is None:
-            return
-        payload = {**frame, "protocol": PROTOCOL_VERSION, "epoch": self.epoch}
-        ws.send(json.dumps(payload, separators=(",", ":")))
+        with self._lock:
+            epoch = self.epoch
+        with self._send_lock:
+            ws = self._ws
+            if ws is None:
+                return
+            payload = {**frame, "protocol": PROTOCOL_VERSION, "epoch": epoch}
+            ws.send(json.dumps(payload, separators=(",", ":")))
 
     def _send(self, frame: Dict[str, Any]) -> None:
         if self._ready.is_set():
@@ -364,20 +370,34 @@ class SyncwellClient:
             return
         kind = frame.get("type")
         if kind == "snapshot":
-            self.epoch = max(1, int(frame.get("epoch") or self.epoch))
-            self._merge_state(frame.get("state") or {})
-            if not self._ready.is_set():
-                if self.dirty:
-                    self._send_raw({"type": "merge", "state": {k: self.entries[k] for k in self.dirty if k in self.entries}})
-                    self.dirty.clear()
-                self._ready.set()
-                self._send_raw({"type": "ack", "clock": self.clock})
+            state = frame.get("state") or {}
+            dirty_to_send = None
+            clock_counter = 0
+            with self._lock:
+                self.epoch = max(1, int(frame.get("epoch") or self.epoch))
+                for reg in state.values():
+                    if isinstance(reg, dict):
+                        self.clock.observe(reg.get("t"))
+                self._merge_state(state)
+                need_ready = not self._ready.is_set()
+                if need_ready:
+                    if self.dirty:
+                        dirty_to_send = {k: self.entries[k] for k in self.dirty if k in self.entries}
+                        self.dirty.clear()
+                    self._ready.set()
+                    clock_counter = self.clock.counter
+            if dirty_to_send is not None:
+                self._send_raw({"type": "merge", "state": dirty_to_send})
+            if need_ready:
+                self._send_raw({"type": "ack", "clock": clock_counter})
                 self._emit("open")
             self._emit("change", self.live())
         elif kind == "op":
             reg = frame.get("register") or {}
-            self.clock = max(self.clock, int(reg.get("t", {}).get("c", 0)))
-            self._merge_register(frame.get("key"), reg)
+            key = frame.get("key")
+            with self._lock:
+                self.clock.observe(reg.get("t"))
+                self._merge_register(key, reg)
             self._emit("change", self.live())
         elif kind == "presence":
             self._emit("presence", frame)
@@ -396,12 +416,13 @@ class SyncwellClient:
         self.crdt.merge(state)
 
     def _tick(self) -> Dict[str, Any]:
-        self.clock += 1
-        return {"c": self.clock, "n": self.client_id}
+        with self._lock:
+            return self.clock.tick()
 
     def _write(self, key: str, reg: Dict[str, Any]) -> None:
-        self._merge_register(key, reg)
-        self.dirty.add(key)
+        with self._lock:
+            self._merge_register(key, reg)
+            self.dirty.add(key)
         self._send({"type": "op", "key": key, "register": reg})
         self._emit("change", self.live())
 
@@ -415,13 +436,16 @@ class SyncwellClient:
         self._send({"type": "presence", "data": data})
 
     def get(self, key: str, fallback: Any = None) -> Any:
-        return self.crdt.get(key, fallback)
+        with self._lock:
+            return self.crdt.get(key, fallback)
 
     def live(self) -> Dict[str, Any]:
-        return self.crdt.live()
+        with self._lock:
+            return self.crdt.live()
 
     def snapshot(self) -> Dict[str, Dict[str, Any]]:
-        return self.crdt.snapshot()
+        with self._lock:
+            return self.crdt.snapshot()
 
     def __enter__(self) -> SyncwellClient:
         return self.connect()

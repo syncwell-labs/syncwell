@@ -121,6 +121,7 @@ export class Syncwell {
     this.presenceThrottleMs = Math.max(0, Number(opts.presenceThrottleMs) || 0);
     this._presenceTimer = null;
     this._throttledPresence = null;
+    this._pendingPresence = null;
 
     // The local CRDT replica. node id = clientId so its writes are globally
     // ordered against every other replica.
@@ -288,6 +289,7 @@ export class Syncwell {
     this._helloTimer = null;
     this._presenceTimer = null;
     this._throttledPresence = null;
+    this._pendingPresence = null;
     this._ready = false;
     if (this.ws) this.ws.close();
   }
@@ -466,6 +468,9 @@ export class Syncwell {
         }
         this.clock.observe(msg.register?.t);
         this.doc.mergeRegister(msg.key, msg.register);
+        if (sameRegister(this.doc.entries.get(msg.key), msg.register)) {
+          this._dirty.delete(msg.key);
+        }
         this._pruneDirty();
         this._saveLocal();
         this._changed();

@@ -174,7 +174,7 @@ export function mountDevTools(syncwell, options = {}) {
       const snap = syncwell.doc?.snapshot ? syncwell.doc.snapshot() : {};
       body.innerHTML = `
         <div style="margin-bottom: 10px; color: #94a3b8; font-size: 11px;">
-          Room: <b style="color: #f8fafc;">${syncwell.room}</b> | Client ID: <b style="color: #f8fafc;">${syncwell.clientId}</b>
+          Room: <b style="color: #f8fafc;">${escapeHtml(syncwell.room)}</b> | Client ID: <b style="color: #f8fafc;">${escapeHtml(syncwell.clientId)}</b>
         </div>
         <div style="font-weight: 600; color: #38bdf8; margin-bottom: 4px;">Live State (${Object.keys(live).length} keys)</div>
         <pre style="background: #1e293b; padding: 8px; border-radius: 4px; overflow: auto; color: #a5f3fc;">${escapeHtml(JSON.stringify(live, null, 2))}</pre>
@@ -246,14 +246,14 @@ export function mountDevTools(syncwell, options = {}) {
               (peer) => `
               <div style="background: #1e293b; padding: 8px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;">
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="width: 12px; height: 12px; border-radius: 9999px; background: ${peer.color || "#38bdf8"};"></span>
+                  <span style="width: 12px; height: 12px; border-radius: 9999px; background: ${sanitizeColor(peer.color)};"></span>
                   <div>
-                    <div style="font-weight: 600; color: #f8fafc;">${escapeHtml(peer.user?.name || peer.clientId)} ${peer.self ? '<span style="color: #38bdf8; font-size: 10px;">(You)</span>' : ""}</div>
-                    <div style="color: #94a3b8; font-size: 10px;">ID: ${peer.clientId}</div>
+                    <div style="font-weight: 600; color: #f8fafc;">${escapeHtml(peer.user?.name || peer.clientId || "")} ${peer.self ? '<span style="color: #38bdf8; font-size: 10px;">(You)</span>' : ""}</div>
+                    <div style="color: #94a3b8; font-size: 10px;">ID: ${escapeHtml(peer.clientId)}</div>
                   </div>
                 </div>
                 <div style="color: #94a3b8; font-size: 11px;">
-                  ${peer.cursor ? `Cursor: ${peer.cursor.index}` : "Idle"}
+                  ${peer.cursor ? `Cursor: ${escapeHtml(peer.cursor.index)}` : "Idle"}
                 </div>
               </div>
             `
@@ -299,7 +299,27 @@ export function mountDevTools(syncwell, options = {}) {
   };
 }
 
-function escapeHtml(str) {
-  if (typeof str !== "string") return str;
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export function escapeHtml(str) {
+  if (typeof str !== "string") str = String(str ?? "");
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function sanitizeColor(color) {
+  if (typeof color !== "string") return "#38bdf8";
+  color = color.trim();
+  if (/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
+    return color;
+  }
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)$/i.test(color)) {
+    return color;
+  }
+  if (/^hsla?\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)$/i.test(color)) {
+    return color;
+  }
+  return "#38bdf8";
 }

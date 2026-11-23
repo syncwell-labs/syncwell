@@ -5,7 +5,7 @@
 
 **Add multiplayer — live cursors, presence, and conflict-free shared state — to any app with a few lines of code. Self-hostable, single binary, language-agnostic.**
 
-**Live demo:** https://syncwell-demo.onrender.com · **Docs:** https://syncwell-labs.github.io/syncwell/
+**Live demo:** https://syncwell-demo.onrender.com · **Playground:** [/playground.html](examples/demos/playground.html) · **Docs:** https://syncwell-labs.github.io/syncwell/
 
 The demo runs on a free Render instance: it sleeps after 15 minutes idle (about a minute to wake), rooms are in-memory, and `SYNCWELL_INSECURE=1` is intentional for the throwaway demo.
 
@@ -28,9 +28,10 @@ dependencies). Then:
 ```bash
 # Local dev: bind loopback so no credentials are needed.
 go run ./cmd/syncwell -addr 127.0.0.1:8080
-# open http://localhost:8080             → simple state demo (two windows)
-# open http://localhost:8080/kanban.html → collaborative kanban (drag cards live)
-# open http://localhost:8080/sequence.html → collaborative text, cursors, undo/redo
+# open http://localhost:8080/playground.html → side-by-side offline/online convergence playground
+# open http://localhost:8080                 → simple state demo (two windows)
+# open http://localhost:8080/kanban.html     → collaborative kanban (drag cards live)
+# open http://localhost:8080/sequence.html   → collaborative text, cursors, undo/redo
 ```
 
 A **room token** is a short-lived signed pass that lets a client join one room.
@@ -229,18 +230,18 @@ Conflict-free ordered array CRDT with fractional indexing:
 
 Syncwell notifies external services through HMAC-SHA256 signed webhooks (`room.persisted`, `room.evicted`). Backends query `GET /admin/api/rooms/{room}/state` to upsert live document JSON into PostgreSQL `jsonb` or SQLite automatically. See [docs/self-hosting/database-sync](./website/self-hosting/database-sync.md).
 
-### Editor Adapters & Visual CRDT DevTools
+### Visual CRDT DevTools
 
-- **Monaco Editor** (`syncwell-client/monaco`): Zero-dependency Monaco adapter with live remote selections and cursors.
-- **TipTap & ProseMirror** (`syncwell-client/tiptap`): Rich-text collaborative binding for TipTap/ProseMirror views.
 - **CRDT DevTools Overlay** (`syncwell-client/devtools`): Press `Ctrl+Shift+S` to inspect live CRDT registers, Lamport clocks, causal tombstones, and the incoming op stream directly in the browser.
 
-### Python Client (`syncwell-client`)
+### Python Client
 
-Install from PyPI:
+Install from local source or GitHub:
 
 ```bash
-pip install syncwell-client
+pip install ./clients/python
+# or from GitHub:
+# pip install git+https://github.com/syncwell-labs/syncwell.git#subdirectory=clients/python
 ```
 
 ```python
@@ -263,8 +264,7 @@ helm install syncwell ./deploy/helm/syncwell \
 ```
 Features zero-downtime rolling deploys via `preStop` WebSocket connection draining, Prometheus metric scraping, and optional Redis pub/sub relay.
 
-For a bundler/Node setup install the npm package (`npm install syncwell-client`,
-same API, TypeScript types included) or import the copy the server serves from `/sdk/`.
+For a bundler/Node setup, install the package locally (`npm install ./clients/javascript`), from GitHub (`npm install github:syncwell-labs/syncwell#clients/javascript`), or import the copy the server serves directly from `/sdk/` (zero install needed, TypeScript types included).
 
 For hosted deployments, put Syncwell behind TLS, configure `-origins`, require
 room tokens with `-secret`, protect `/stats` with `-admin-token`, use
@@ -315,12 +315,18 @@ _Phase 7 code is in place: the VitePress site under [`website/`](website/) build
 in CI, protocol v1 is frozen, and the launch/demo runbook is written. Still
 owner-only (see [docs/product/LAUNCH.md](./docs/product/LAUNCH.md) and
 [docs/product/MILESTONES.md](./docs/product/MILESTONES.md)): enable GitHub Pages, publish the
-release tags/npm package/GHCR image, deploy the tag-pinned demo with a status
-page, refresh the live metrics, and publish the launch post. For the unfiltered
-list of what is **not** production-ready, read
-[docs/audits/READINESS_AUDIT_2026-10-19.md](./docs/audits/READINESS_AUDIT_2026-10-19.md); for the
-plan to close every gap, read
-[docs/audits/COMPLETION_PLAN_2026-10-20.md](./docs/audits/COMPLETION_PLAN_2026-10-20.md)._
+release tags/GHCR image, deploy the tag-pinned demo with a status
+page, refresh the live metrics, and publish the launch post._
+
+## Architecture & Engineering Trade-offs
+
+Syncwell prioritizes operational simplicity, bounded memory, and mathematical correctness over feature sprawl:
+
+- **Single-Goroutine Lock-Free Room Actor Model:** Each room document is owned by a single dedicated goroutine that processes all mutation and broadcast messages sequentially via Go channels. This eliminates lock contention, mutex deadlocks, and data races while providing predictable sub-millisecond latency without complex transactional overhead.
+- **RFC 8785 Canonical JSON Deterministic Tie-Breaking:** When concurrent writes share identical Lamport timestamps and node IDs (e.g. offline replicas generating simultaneous edits), conflicts are resolved using RFC 8785 JSON Canonicalization Scheme (JCS). This guarantees all nodes converge to byte-identical state regardless of peer arrival order or platform JSON serialization differences.
+- **Causal-Stability Tombstone Garbage Collection:** Deletes in CRDTs introduce tombstones that accumulate over time. Syncwell computes a causal-stability low-water mark across all participating clients to safely collect and prune tombstones without risking resurrecting deleted data on late-arriving packets.
+- **Redis Fenced Leases for Split-Brain Prevention:** In clustered deployments, room ownership is arbitrated via fenced Redis leases with monotonically increasing epoch counters. In the event of network partitions or failovers, stale leaders attempting to publish updates are rejected at the protocol boundary.
+- **SSRF & DNS-Rebinding-Safe Webhooks:** Event notifications and database sync webhooks validate destination IPs through a dedicated dialer that resolves DNS records at connect time and blocks loopback, link-local, private RFC 1918, cloud metadata addresses (169.254.169.254), and TOCTOU DNS rebinding attacks.
 
 ## How it works
 
@@ -336,14 +342,14 @@ cmd/loadtest/        load/soak harness
 internal/crdt/       the CRDT core + property test suite  ← the heart
 internal/server/     room hub, websocket pumps, presence relay, admin, webhooks
 internal/store/      append-only persistence, snapshots, backup/restore
-clients/javascript/  typed browser/Node client: map, text, awareness, react, monaco, tiptap, devtools
-clients/python/      syncwell-client PyPI package: LWWMap, Clock, client
+clients/javascript/  typed browser/Node client: map, text, awareness, react, devtools
+clients/python/      pure-Python client: LWWMap, Clock, client
 examples/            React, Vue, Svelte, vanilla, and Node integrations
-examples/demos/      multiplayer state, kanban, and collaborative text demos
+examples/demos/      multiplayer state, kanban, collaborative text, and convergence playground
 tests/               e2e/, a11y/, bench/, conformance/ harnesses
 deploy/              helm/, proxies/, systemd/, monitoring/ deployment artifacts
 website/             VitePress docs site (quickstart, SDK, self-hosting, reference)
-docs/                architecture/ protocol/ operations/ product/ standards/ audits/
+docs/                architecture/ protocol/ operations/ product/ standards/ adr/
 ```
 
 ## Roadmap
